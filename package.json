@@ -1,0 +1,25 @@
+{
+  "name": "defi-swarm-newtab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DeFi agent-swarm new-tab Chrome extension",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.281",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.10"
+  }
+}
