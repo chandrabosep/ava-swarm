@@ -14,7 +14,12 @@ const queryClient = new QueryClient();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <WagmiProvider config={wagmiConfig}>
+    {/* reconnectOnMount={false}: extension new-tab pages get a fresh
+        document each time, and a previous WalletConnect session's relay
+        socket doesn't survive that. Auto-reconnect leaves wagmi stuck in
+        `reconnecting` forever. Better to start disconnected and let the
+        user reconnect on click. */}
+    <WagmiProvider config={wagmiConfig} reconnectOnMount={false}>
       <QueryClientProvider client={queryClient}>
         <App />
       </QueryClientProvider>
