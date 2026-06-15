@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DeFi agent-swarm new-tab Chrome extension",
+  "description": "DeFi agent-swarm new-tab Chrome extension (UI shell + wallet)",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -15,6 +15,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
     "@types/chrome": "^0.0.281",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
