@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    font-feature-settings:
+      'cv11' on,
+      'ss01' on;
+  }
+
+  /* Reown AppKit's <appkit-button /> emits a default <button> we want to
+     style consistently with the rest of the dashboard. */
+  appkit-button::part(button) {
+    border-radius: 6px;
+  }
+}
+
+@layer components {
+  .surface {
+    @apply bg-bg-surface border border-border rounded-lg shadow-surface;
+  }
+
+  .surface-raised {
+    @apply bg-bg-raised border border-border-subtle rounded-lg;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm text-fg-muted hover:text-fg hover:bg-bg-hover transition-colors cursor-pointer;
+  }
+
+  .nav-item-active {
+    @apply text-fg bg-bg-hover;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full border;
+  }
+}
