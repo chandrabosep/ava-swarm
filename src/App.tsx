@@ -1,3 +1,5 @@
+import NewTab from '@/pages/NewTab';
+
 export default function App() {
-  return <div>DeFi Swarm</div>;
+  return <NewTab />;
 }
