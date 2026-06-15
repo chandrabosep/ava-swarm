@@ -1,10 +1,10 @@
-// All mock data lives here so it's trivial to delete the moment we wire real
-// agent runtime / portfolio sources.
+// Remaining mock data — only the agent swarm cards still rely on this.
+// Portfolio data is live via Zerion (src/hooks/usePortfolio.ts), and the
+// Recent activity rail now reads from Zerion's transactions endpoint.
 
-import type { Agent, AgentRole, Intent, PortfolioSummary } from '@/types';
+import type { Agent, AgentRole } from '@/types';
 
 const HOUR = 60 * 60 * 1000;
-const MINUTE = 60 * 1000;
 const now = Date.now();
 
 export const ROLE_LABELS: Record<AgentRole, string> = {
@@ -27,56 +27,3 @@ export const mockAgents: Agent[] = [
   { id: 'agent-router', role: 'router', status: 'offline', lastSeen: now - 6 * HOUR },
   { id: 'agent-executor', role: 'executor', status: 'offline', lastSeen: now - 6 * HOUR },
 ];
-
-export const mockPortfolio: PortfolioSummary = {
-  totalValueUsd: 124_530.42,
-  change24hUsd: 1_842.17,
-  change24hPct: 0.0151,
-  allocations: [
-    { symbol: 'ETH', pct: 0.42, valueUsd: 52_302.78 },
-    { symbol: 'USDC', pct: 0.28, valueUsd: 34_868.52 },
-    { symbol: 'WBTC', pct: 0.18, valueUsd: 22_415.48 },
-    { symbol: 'UNI', pct: 0.07, valueUsd: 8_717.13 },
-    { symbol: 'Other', pct: 0.05, valueUsd: 6_226.51 },
-  ],
-};
-
-export const mockIntents: Intent[] = [
-  {
-    id: 'intent-001',
-    from: 'pm',
-    tokenIn: 'USDC',
-    tokenOut: 'ETH',
-    amount: '5,000',
-    createdAt: now - 4 * MINUTE,
-    status: 'pending',
-  },
-  {
-    id: 'intent-002',
-    from: 'alm',
-    tokenIn: 'ETH',
-    tokenOut: 'USDC',
-    amount: '1.42',
-    createdAt: now - 12 * MINUTE,
-    status: 'netted',
-  },
-  {
-    id: 'intent-003',
-    from: 'router',
-    tokenIn: 'WBTC',
-    tokenOut: 'USDC',
-    amount: '0.08',
-    createdAt: now - 38 * MINUTE,
-    status: 'routed',
-  },
-  {
-    id: 'intent-004',
-    from: 'executor',
-    tokenIn: 'USDC',
-    tokenOut: 'UNI',
-    amount: '750',
-    createdAt: now - 2 * HOUR,
-    status: 'executed',
-  },
-];
-

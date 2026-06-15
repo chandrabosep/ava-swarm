@@ -16,6 +16,7 @@ export interface Agent {
 
 export type IntentStatus = 'pending' | 'netted' | 'routed' | 'executed';
 
+/** Internal agent intent — populated when the swarm comes online. */
 export interface Intent {
   id: string;
   from: AgentRole;
