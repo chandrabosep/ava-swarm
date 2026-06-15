@@ -1,13 +1,7 @@
 // All mock data lives here so it's trivial to delete the moment we wire real
-// agent runtime / portfolio / news sources.
+// agent runtime / portfolio sources.
 
-import type {
-  Agent,
-  AgentRole,
-  Intent,
-  NewsItem,
-  PortfolioSummary,
-} from '@/types';
+import type { Agent, AgentRole, Intent, PortfolioSummary } from '@/types';
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
@@ -86,45 +80,3 @@ export const mockIntents: Intent[] = [
   },
 ];
 
-export const mockNews: NewsItem[] = [
-  {
-    id: 'news-001',
-    title: 'Uniswap v4 hooks ship to mainnet — early TVL ramps faster than v3',
-    source: 'The Defiant',
-    url: 'https://thedefiant.io/uniswap-v4',
-    tags: ['Uniswap', 'v4', 'Hooks'],
-    publishedAt: now - 35 * MINUTE,
-  },
-  {
-    id: 'news-002',
-    title: 'Unichain throughput hits new high after sequencer upgrade',
-    source: 'Unichain Blog',
-    url: 'https://blog.uniswap.org/unichain',
-    tags: ['Unichain', 'L2', 'Performance'],
-    publishedAt: now - 2 * HOUR,
-  },
-  {
-    id: 'news-003',
-    title: 'Permit2 adoption crosses 60% of EVM swap volume',
-    source: 'Dune',
-    url: 'https://dune.com/permit2',
-    tags: ['Permit2', 'Approvals'],
-    publishedAt: now - 5 * HOUR,
-  },
-  {
-    id: 'news-004',
-    title: 'Base announces new fee-rebate program for active LPs',
-    source: 'Base',
-    url: 'https://base.org/blog',
-    tags: ['Base', 'LP', 'Incentives'],
-    publishedAt: now - 8 * HOUR,
-  },
-  {
-    id: 'news-005',
-    title: 'Gensyn AXL testnet opens — agent-to-agent comms primitives',
-    source: 'Gensyn',
-    url: 'https://gensyn.ai/axl',
-    tags: ['Gensyn', 'AXL', 'Agents'],
-    publishedAt: now - 18 * HOUR,
-  },
-];
