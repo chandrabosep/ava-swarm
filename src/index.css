@@ -31,14 +31,6 @@
     @apply bg-bg-raised border border-border-subtle rounded-lg;
   }
 
-  .nav-item {
-    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm text-fg-muted hover:text-fg hover:bg-bg-hover transition-colors cursor-pointer;
-  }
-
-  .nav-item-active {
-    @apply text-fg bg-bg-hover;
-  }
-
   .badge {
     @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full border;
   }

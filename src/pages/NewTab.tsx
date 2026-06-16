@@ -1,5 +1,4 @@
 import { Header } from '@/components/layout/Header';
-import { Sidebar } from '@/components/layout/Sidebar';
 import { RightRail } from '@/components/layout/RightRail';
 import { SummaryCards } from '@/components/portfolio/SummaryCards';
 import { AllocationChart } from '@/components/portfolio/AllocationChart';
@@ -11,8 +10,7 @@ export default function NewTab() {
     <div className="min-h-screen bg-bg text-fg">
       <Header />
       <div className="flex">
-        <Sidebar />
-        <main className="flex-1 min-w-0 px-8 py-6 space-y-8">
+        <main className="flex-1 min-w-0 px-8 pb-8 space-y-8">
           <section>
             <h1 className="text-lg font-semibold tracking-tight">Portfolio</h1>
             <p className="text-sm text-fg-muted">
