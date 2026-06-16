@@ -28,6 +28,21 @@ export default defineManifest({
     // context which we don't use. Kept so a future content-script proxy
     // can rely on it.
     'https://api.zerion.io/*',
+    // Pimlico — ERC-4337 bundler for the Safe smart account.
+    'https://api.pimlico.io/*',
+    'https://*.pimlico.io/*',
+    // Safe Transaction Service — used to read Safe state (owners, modules,
+    // pending transactions) without RPC scanning.
+    'https://safe-transaction-mainnet.safe.global/*',
+    'https://safe-transaction-base.safe.global/*',
+    'https://safe-transaction-unichain.safe.global/*',
+    // Public RPCs we hit from the page for Safe address prediction and
+    // deployment-state checks. Keep narrow rather than `https://*` so the
+    // permissions prompt is honest about what we touch.
+    'https://eth.llamarpc.com/*',
+    'https://base.llamarpc.com/*',
+    'https://unichain.drpc.org/*',
+    'https://mainnet.unichain.org/*',
   ],
   content_security_policy: {
     extension_pages:
