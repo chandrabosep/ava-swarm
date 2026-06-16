@@ -1,0 +1,6 @@
+name = "defi-swarm-zerion-proxy"
+main = "zerion-worker.js"
+compatibility_date = "2025-01-01"
+
+# Run `wrangler deploy` in this directory to publish.
+# Run `wrangler secret put ZERION_API_KEY` to set the API key (server-side).
