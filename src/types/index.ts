@@ -28,16 +28,6 @@ export interface Intent {
   status: IntentStatus;
 }
 
-export interface NewsItem {
-  id: string;
-  title: string;
-  source: string;
-  url: string;
-  tags: string[];
-  /** Unix ms */
-  publishedAt: number;
-}
-
 export interface PortfolioSummary {
   totalValueUsd: number;
   change24hUsd: number;
