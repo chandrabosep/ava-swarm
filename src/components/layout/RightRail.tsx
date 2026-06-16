@@ -1,5 +1,6 @@
 import { Surface } from '@/components/common/Surface';
 import { Badge } from '@/components/common/Badge';
+import { WalletButton } from '@/components/wallet/WalletButton';
 import { mockIntents, ROLE_LABELS } from '@/lib/mock';
 import { formatRelative } from '@/lib/format';
 import type { IntentStatus } from '@/types';
@@ -17,17 +18,9 @@ const STATUS_TONE: Record<
 export function RightRail() {
   return (
     <aside className="w-80 shrink-0 border-l border-border h-screen sticky top-0 p-4 overflow-y-auto space-y-6">
-      {/* Wallet — chain selector + connect button. Sits at the top so it's
-          always reachable; the rest of the rail is read-only context. */}
-      <section className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Wallet</h2>
-        </div>
-        <Surface variant="raised" className="p-3 flex flex-col gap-2">
-          <appkit-network-button />
-          <appkit-button balance="hide" size="md" />
-        </Surface>
-      </section>
+      {/* Custom connect/account button driven by wagmi state — see
+          WalletButton.tsx for why we don't use <appkit-button /> directly. */}
+      <WalletButton />
 
       <section>
         <div className="flex items-center justify-between mb-3">
