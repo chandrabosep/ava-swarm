@@ -7,3 +7,4 @@ export * from './crypto.js';
 export * from './axl.js';
 export * from './chain.js';
 export * from './types.js';
+export * from './boot.js';
