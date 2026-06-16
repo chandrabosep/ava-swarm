@@ -1,0 +1,30 @@
+{
+  "name": "defi-swarm-agents",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Backend agent swarm — multi-tenant services that act on user Safes via session keys.",
+  "workspaces": [
+    "shared",
+    "pm",
+    "alm",
+    "router",
+    "executor"
+  ],
+  "scripts": {
+    "build": "tsc -b shared pm alm router executor",
+    "typecheck": "tsc -b shared pm alm router executor --noEmit",
+    "prisma:generate": "npm --workspace shared run prisma:generate",
+    "prisma:migrate": "npm --workspace shared run prisma:migrate",
+    "dev:pm": "npm --workspace pm run dev",
+    "dev:alm": "npm --workspace alm run dev",
+    "dev:router": "npm --workspace router run dev",
+    "dev:executor": "npm --workspace executor run dev",
+    "dev:all": "concurrently -n pm,alm,router,executor -c green,blue,magenta,yellow \"npm:dev:pm\" \"npm:dev:alm\" \"npm:dev:router\" \"npm:dev:executor\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.2",
+    "@types/node": "^22.7.5"
+  }
+}

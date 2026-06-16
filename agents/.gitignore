@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Prisma generated client
+shared/node_modules/
+shared/prisma/migrations/.tmp/

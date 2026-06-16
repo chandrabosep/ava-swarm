@@ -1,0 +1,114 @@
+// Multi-tenant agent state.
+//
+// Primary key everywhere is the user's deterministic Safe address — it's
+// the same string across chains so we don't have to scope by (chain, addr).
+// Per-chain runtime state goes in AgentState.state JSON when needed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum AgentRole {
+  pm
+  alm
+  router
+  executor
+}
+
+enum IntentStatus {
+  pending
+  netted
+  routed
+  executing
+  executed
+  failed
+  expired
+}
+
+model User {
+  safeAddress String   @id @map("safe_address")
+  ownerEoa    String   @map("owner_eoa")
+  /// Comma-separated list of chains where the Safe is deployed + active.
+  chains      String   @default("")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  sessions    Session[]
+  intents     Intent[]
+  events      Event[]
+  agentStates AgentState[]
+
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(uuid())
+  safeAddress      String    @map("safe_address")
+  agent            AgentRole
+  /// Public address of the session keypair the agent holds for this user.
+  sessionAddress   String    @map("session_address")
+  /// AES-GCM encrypted private key (base64). Decrypted only at sign-time.
+  encryptedPrivkey String    @map("encrypted_privkey")
+  /// Stable hash of the policy granted onchain — for change detection.
+  policyHash       String    @map("policy_hash")
+  grantedAt        DateTime  @default(now()) @map("granted_at")
+  validUntil       DateTime  @map("valid_until")
+
+  user             User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+
+  @@unique([safeAddress, agent])
+  @@index([agent, validUntil])
+  @@map("sessions")
+}
+
+model Intent {
+  id          String       @id @default(uuid())
+  safeAddress String       @map("safe_address")
+  fromAgent   AgentRole    @map("from_agent")
+  /// Free-form per-intent payload. Schema enforced in TS, not SQL.
+  payload     Json
+  status      IntentStatus @default(pending)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  user        User         @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+
+  @@index([safeAddress, status])
+  @@index([status, createdAt])
+  @@map("intents")
+}
+
+model Event {
+  id          String     @id @default(uuid())
+  safeAddress String     @map("safe_address")
+  agent       AgentRole?
+  /// Short event kind tag, e.g. "session.granted", "intent.executed", "alm.tick".
+  kind        String
+  payload     Json?
+  createdAt   DateTime   @default(now()) @map("created_at")
+
+  user        User       @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+
+  @@index([safeAddress, createdAt])
+  @@index([kind, createdAt])
+  @@map("events")
+}
+
+model AgentState {
+  agent       AgentRole
+  safeAddress String    @map("safe_address")
+  /// Per-tenant runtime state — last-tick timestamp, cached LP positions,
+  /// allocation snapshot, whatever each agent needs.
+  state       Json
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user        User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+
+  @@id([agent, safeAddress])
+  @@map("agent_state")
+}

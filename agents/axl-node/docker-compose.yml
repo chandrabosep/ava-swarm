@@ -1,0 +1,56 @@
+# Run a single AXL daemon per agent. Each agent process talks to its own
+# localhost:PORT instance, so we run four containers on different ports.
+#
+# Replace `gensynai/axl:latest` with the exact image / version once Gensyn
+# pins one. For local dev you can also run the AXL binary directly:
+#   axl --port 9001 --data-dir ./.axl-pm
+# Repeat per agent on different ports.
+
+version: '3.9'
+
+services:
+  axl-pm:
+    image: gensynai/axl:latest
+    container_name: axl-pm
+    command: ['--port', '9001', '--data-dir', '/data']
+    ports:
+      - '9001:9001'
+    volumes:
+      - axl-pm-data:/data
+    restart: unless-stopped
+
+  axl-alm:
+    image: gensynai/axl:latest
+    container_name: axl-alm
+    command: ['--port', '9002', '--data-dir', '/data']
+    ports:
+      - '9002:9002'
+    volumes:
+      - axl-alm-data:/data
+    restart: unless-stopped
+
+  axl-router:
+    image: gensynai/axl:latest
+    container_name: axl-router
+    command: ['--port', '9003', '--data-dir', '/data']
+    ports:
+      - '9003:9003'
+    volumes:
+      - axl-router-data:/data
+    restart: unless-stopped
+
+  axl-executor:
+    image: gensynai/axl:latest
+    container_name: axl-executor
+    command: ['--port', '9004', '--data-dir', '/data']
+    ports:
+      - '9004:9004'
+    volumes:
+      - axl-executor-data:/data
+    restart: unless-stopped
+
+volumes:
+  axl-pm-data:
+  axl-alm-data:
+  axl-router-data:
+  axl-executor-data:
