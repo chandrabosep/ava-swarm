@@ -115,3 +115,11 @@ export async function assertCrossChainAddressParity(
 export function chainIdOf(chain: SupportedChain): number {
   return CHAIN_ID[chain];
 }
+
+/** Numeric chain id → SupportedChain. Returns null for unsupported ids. */
+export function chainFromId(chainId: number): SupportedChain | null {
+  for (const c of Object.keys(CHAIN_ID) as SupportedChain[]) {
+    if (CHAIN_ID[c] === chainId) return c;
+  }
+  return null;
+}

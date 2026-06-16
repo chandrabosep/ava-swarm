@@ -5,6 +5,7 @@ import { Badge } from '@/components/common/Badge';
 import { Button } from '@/components/common/Button';
 import { WalletButton } from '@/components/wallet/WalletButton';
 import { useWalletTransactions } from '@/hooks/usePortfolio';
+import { useSafe, useSessions } from '@/hooks/useSafe';
 import { describeTransaction } from '@/lib/transactions';
 import { formatRelative } from '@/lib/format';
 
@@ -22,6 +23,7 @@ export function RightRail() {
       {/* Connect / account button — driven by wagmi state, never disappears.
           See WalletButton.tsx for the details. */}
       <WalletButton />
+      <SwarmStatusLine />
 
       <section>
         <div className="flex items-center justify-between mb-3">
@@ -55,6 +57,31 @@ export function RightRail() {
         </Surface>
       </section>
     </aside>
+  );
+}
+
+function SwarmStatusLine() {
+  const { isConnected } = useAccount();
+  const safe = useSafe();
+  const sessions = useSessions();
+  if (!isConnected) return null;
+
+  const deployed = !!safe.data?.deployment.deployed;
+  const moduleOn = !!safe.data?.deployment.smartSessionsInstalled;
+  const granted = !!sessions.data?.alm && !!sessions.data?.executor;
+  const active = deployed && moduleOn && granted;
+
+  return (
+    <div className="text-[11px] text-fg-subtle px-1 -mt-2">
+      swarm:{' '}
+      {active ? (
+        <span className="text-positive">active</span>
+      ) : safe.isLoading ? (
+        '…'
+      ) : (
+        <span className="text-fg-muted">not activated</span>
+      )}
+    </div>
   );
 }
 

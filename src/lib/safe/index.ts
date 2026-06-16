@@ -5,6 +5,7 @@ export {
   predictSmartAccountAddress,
   assertCrossChainAddressParity,
   chainIdOf,
+  chainFromId,
   SAFE_4337_MODULE_ADDRESS,
   SAFE_VERSION,
   DEFAULT_SALT_NONCE,

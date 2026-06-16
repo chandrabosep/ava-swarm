@@ -2,7 +2,9 @@ import { Surface } from '@/components/common/Surface';
 import { Badge } from '@/components/common/Badge';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '@/lib/mock';
 import { formatRelative } from '@/lib/format';
-import type { Agent, AgentStatus } from '@/types';
+import { useSessions } from '@/hooks/useSafe';
+import { shortAddress } from '@/lib/format';
+import type { Agent, AgentRole, AgentStatus } from '@/types';
 
 const STATUS_TONE: Record<AgentStatus, 'neutral' | 'accent' | 'positive'> = {
   offline: 'neutral',
@@ -10,11 +12,26 @@ const STATUS_TONE: Record<AgentStatus, 'neutral' | 'accent' | 'positive'> = {
   busy: 'positive',
 };
 
+/** Roles that need an onchain session key. PM/Router stay offchain. */
+const NEEDS_SESSION: ReadonlySet<AgentRole> = new Set(['alm', 'executor']);
+
 interface AgentCardProps {
   agent: Agent;
 }
 
 export function AgentCard({ agent }: AgentCardProps) {
+  const sessions = useSessions();
+
+  // alm/executor map 1:1 to AgentRole; pm/router don't need a session.
+  const sessionKey =
+    agent.role === 'alm'
+      ? sessions.data?.alm
+      : agent.role === 'executor'
+        ? sessions.data?.executor
+        : undefined;
+  const needsSession = NEEDS_SESSION.has(agent.role);
+  const granted = needsSession && !!sessionKey;
+
   return (
     <Surface variant="raised" className="p-4 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
@@ -34,6 +51,23 @@ export function AgentCard({ agent }: AgentCardProps) {
       <p className="text-xs text-fg-muted leading-relaxed">
         {ROLE_DESCRIPTIONS[agent.role]}
       </p>
+
+      {/* Session key status — only for agents that need one. */}
+      {needsSession && (
+        <div className="text-[11px] text-fg-subtle border-t border-border-subtle pt-2">
+          {granted ? (
+            <span>
+              session:{' '}
+              <span className="font-mono text-fg-muted">
+                {shortAddress(sessionKey!)}
+              </span>{' '}
+              · granted
+            </span>
+          ) : (
+            <span>session: not granted</span>
+          )}
+        </div>
+      )}
 
       <div className="mt-auto flex items-center justify-between text-[11px] text-fg-subtle">
         <span className="font-mono">{agent.id}</span>

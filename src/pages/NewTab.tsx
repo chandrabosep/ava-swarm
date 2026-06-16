@@ -2,6 +2,7 @@ import { RightRail } from '@/components/layout/RightRail';
 import { SummaryCards } from '@/components/portfolio/SummaryCards';
 import { AllocationChart } from '@/components/portfolio/AllocationChart';
 import { AgentStatusPanel } from '@/components/agents/AgentStatusPanel';
+import { SmartAccountCard } from '@/components/swarm/SmartAccountCard';
 
 export default function NewTab() {
   return (
@@ -18,6 +19,7 @@ export default function NewTab() {
           </div>
         </section>
 
+        <SmartAccountCard />
         <AgentStatusPanel />
       </main>
       <RightRail />
