@@ -46,9 +46,10 @@ export const env = {
     optional('UNISWAP_API_BASE', 'https://trade-api.gateway.uniswap.org/v1')!,
   pimlicoApiKey: () => optional('PIMLICO_API_KEY'),
 
-  // PM / LLM
-  anthropicApiKey: () => required('ANTHROPIC_API_KEY'),
-  anthropicModel: () => optional('ANTHROPIC_MODEL', 'claude-sonnet-4-6')!,
+  // PM / LLM (Groq — OpenAI-compatible, hosted open-source models)
+  groqApiKey: () => required('GROQ_API_KEY'),
+  groqModel: () => optional('GROQ_MODEL', 'llama-3.3-70b-versatile')!,
+  groqBaseUrl: () => optional('GROQ_BASE_URL', 'https://api.groq.com/openai/v1')!,
 
   // Zerion
   zerionProxyUrl: () => required('ZERION_PROXY_URL'),

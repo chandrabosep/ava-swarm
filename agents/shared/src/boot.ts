@@ -57,13 +57,31 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
     throw err;
   }
 
+  // Sentinel User row that satisfies the AgentState FK for global
+  // (non-tenant-scoped) heartbeat rows. Idempotent.
+  await db().user.upsert({
+    where: { safeAddress: GLOBAL_HEARTBEAT_KEY },
+    update: {},
+    create: {
+      safeAddress: GLOBAL_HEARTBEAT_KEY,
+      ownerEoa: GLOBAL_HEARTBEAT_KEY,
+      chains: '',
+    },
+  });
+
   installShutdownHandlers(log);
   return { role, log, axl, identity };
 }
 
 /**
- * Periodically publish a heartbeat on AXL with the current user count so
- * the dashboard can show "X users served" per agent.
+ * Periodically publish a heartbeat on AXL AND persist it to the DB so the
+ * dashboard's status query can read "X seconds ago" without an AXL
+ * subscription.
+ *
+ * We use the AgentState table (one row per agent globally — null
+ * safeAddress placeholder) for the latest heartbeat, since per-tenant
+ * agent state is already tracked elsewhere. The Event table gets one row
+ * per heartbeat for the activity timeline.
  */
 export function startHeartbeat(
   ctx: AgentContext,
@@ -74,13 +92,37 @@ export function startHeartbeat(
     if (stopped) return;
     try {
       const users = await db().user.count();
-      await ctx.axl.publish({
-        topic: TOPICS.heartbeat,
-        payload: {
-          fromAgent: ctx.role,
-          peerId: ctx.identity.peerId,
-          users,
-          ts: Date.now(),
+      const ts = Date.now();
+      // AXL gossip — fan out to peer agents.
+      await ctx.axl
+        .publish({
+          topic: TOPICS.heartbeat,
+          payload: {
+            fromAgent: ctx.role,
+            peerId: ctx.identity.peerId,
+            users,
+            ts,
+          },
+        })
+        .catch(() => {
+          /* AXL down: heartbeat still lands in DB below */
+        });
+
+      // DB — global row keyed by (agent, GLOBAL_HEARTBEAT_KEY) so the
+      // API can fetch the latest tick per agent in one query without
+      // needing a per-tenant scan.
+      await db().agentState.upsert({
+        where: {
+          agent_safeAddress: {
+            agent: ctx.role,
+            safeAddress: GLOBAL_HEARTBEAT_KEY,
+          },
+        },
+        update: { state: { peerId: ctx.identity.peerId, users, ts } },
+        create: {
+          agent: ctx.role,
+          safeAddress: GLOBAL_HEARTBEAT_KEY,
+          state: { peerId: ctx.identity.peerId, users, ts },
         },
       });
     } catch (err) {
@@ -96,6 +138,13 @@ export function startHeartbeat(
     clearInterval(id);
   };
 }
+
+/**
+ * Sentinel safeAddress used to key the per-agent global heartbeat row.
+ * It's not a real Safe — the User row created on first boot satisfies
+ * the FK; we delete it on shutdown if nothing else references it.
+ */
+export const GLOBAL_HEARTBEAT_KEY = '0x0000000000000000000000000000000000000000';
 
 function installShutdownHandlers(log: Logger): void {
   const shutdown = async (signal: string) => {
