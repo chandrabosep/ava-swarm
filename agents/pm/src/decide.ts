@@ -3,7 +3,11 @@
 // Input:  PortfolioSnapshot + per-user risk envelope (defaults for Phase B).
 // Output: AllocationIntent — target weights per symbol, with a tolerance.
 //
-// We use Anthropic's Messages API directly. The system prompt encodes:
+// We use Groq's OpenAI-compatible API (https://console.groq.com) to run
+// open-source models (default: Llama 3.3 70B). Sub-second latency, no
+// rate-limiting issues at hackathon scale.
+//
+// The system prompt encodes:
 //   - the user's risk policy (max drawdown per day, max single position, …)
 //   - the universe of allowed tokens (for Phase B-1 we hardcode)
 //   - the requirement to return strictly JSON in a known schema
@@ -11,7 +15,7 @@
 // We tolerate the occasional non-JSON response by wrapping in a
 // extract-JSON-from-text fallback.
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
@@ -55,18 +59,25 @@ Rules:
 export async function decideAllocation(
   params: DecideParams,
 ): Promise<AllocationIntent> {
-  const client = new Anthropic({ apiKey: env.anthropicApiKey() });
+  const client = new OpenAI({
+    apiKey: env.groqApiKey(),
+    baseURL: env.groqBaseUrl(),
+  });
 
   const userPrompt = buildUserPrompt(params);
 
-  const res = await client.messages.create({
-    model: env.anthropicModel(),
+  const res = await client.chat.completions.create({
+    model: env.groqModel(),
     max_tokens: 800,
-    system: SYSTEM,
-    messages: [{ role: 'user', content: userPrompt }],
+    temperature: 0.3,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: SYSTEM },
+      { role: 'user', content: userPrompt },
+    ],
   });
 
-  const text = textFromMessage(res);
+  const text = res.choices[0]?.message?.content ?? '';
   const parsed = extractJson(text) as {
     rationale?: string;
     targets?: Array<{ symbol: string; weight: number }>;
@@ -111,13 +122,6 @@ function buildUserPrompt(params: DecideParams): string {
     lines.push('', 'Market context:', context);
   }
   return lines.join('\n');
-}
-
-function textFromMessage(msg: Anthropic.Message): string {
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
 }
 
 /** Find the first {...} JSON object in a string. Tolerates prose around it. */

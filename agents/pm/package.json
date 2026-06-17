@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@swarm/shared": "*",
-    "@anthropic-ai/sdk": "^0.30.0",
+    "openai": "^4.73.0",
     "viem": "^2.21.0"
   },
   "devDependencies": {

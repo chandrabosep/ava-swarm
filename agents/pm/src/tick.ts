@@ -64,9 +64,15 @@ async function tickUser(
   ctx: AgentContext,
   safeAddress: string,
 ): Promise<void> {
+  ctx.log.info('ticking user', { safeAddress });
   const pf = await snapshot(safeAddress);
-  if (pf.totalValueUsd < 1) {
-    // Nothing to allocate yet.
+  ctx.log.info('portfolio snapshot', {
+    safeAddress,
+    totalValueUsd: pf.totalValueUsd,
+    positions: pf.positions.length,
+  });
+  if (pf.totalValueUsd <= 0) {
+    ctx.log.info('skipping — empty portfolio', { safeAddress });
     return;
   }
 
