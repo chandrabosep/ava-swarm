@@ -19,15 +19,30 @@ agents touch Uniswap directly:
 
 ## Trading API — running notes
 
-> _To be filled in as we integrate. Below are the prompts we're
-> tracking against._
+> _Updated as we integrate. See `agents/executor/src/uniswap.ts`._
 
 - **What worked:**
+  - The `/quote` + `/swap` two-step is clean to wrap: one quote shape,
+    one swap shape. Less ad-hoc than building Universal Router calldata
+    by hand.
+  - `swapper` parameter accepting an arbitrary recipient (not just msg.sender)
+    is exactly right for Safe smart-account flows where the EOA submitting
+    a UserOp differs from the on-behalf-of account.
 - **What didn't:**
+  - _to be filled as we hit issues_
 - **DX friction:**
+  - The boundary between "this field is in the response root" vs "in
+    `quote` / `swap` sub-objects" required reading a sample response to
+    figure out — a more uniform shape (`{ amountIn, route, calldata }`
+    flat) would be friendlier.
 - **Docs gaps:**
+  - _to be filled_
 - **Bugs hit:**
+  - _to be filled_
 - **Endpoints we wish existed:**
+  - A combined `/swap-or-quote-then-swap` that returns calldata in one
+    round-trip. Two sequential network calls per swap on a low-latency
+    agent path adds noticeable wall-time.
 
 ## v4 SDK — running notes
 
