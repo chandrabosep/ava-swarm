@@ -19,13 +19,13 @@ import type { Address } from 'viem';
 
 export const SWARM_SERVICE_ADDRESSES = {
   /** Portfolio Manager — doesn't actually sign onchain in Phase A/B-1. */
-  pm: '0x0000000000000000000000000000000000000000' as Address,
+  pm: '0xAe3dafa9d6E68f1651f4AC709B907F66252D7Fc1' as Address,
   /** Active Liquidity Manager — signs Uniswap v4 modifyLiquidity UserOps. */
-  alm: '0x0000000000000000000000000000000000000000' as Address,
+  alm: '0xed7dfbDb2787a28F7386ed6a86e9bfcF83266109' as Address,
   /** Router — doesn't sign onchain. */
-  router: '0x0000000000000000000000000000000000000000' as Address,
+  router: '0x7A8a58cbE22d40Bc01CEEbD9a4B374D0fda666F3' as Address,
   /** Swap Executor — signs Universal Router UserOps via KeeperHub. */
-  executor: '0x0000000000000000000000000000000000000000' as Address,
+  executor: '0x7D7627c2570a578A72c4AFBCd4EcF03a2526d67c' as Address,
 } as const;
 
 export type SessionAgentRole = 'alm' | 'executor';

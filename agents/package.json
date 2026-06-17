@@ -11,15 +11,22 @@
     "executor"
   ],
   "scripts": {
-    "build": "tsc -b shared pm alm router executor",
+    "build": "echo 'skip build — agents run via tsx at runtime'",
+    "build:check": "tsc -b shared pm alm router executor",
     "typecheck": "tsc -b shared pm alm router executor --noEmit",
+    "postinstall": "npm --workspace shared run prisma:generate",
     "prisma:generate": "npm --workspace shared run prisma:generate",
     "prisma:migrate": "npm --workspace shared run prisma:migrate",
     "dev:pm": "npm --workspace pm run dev",
     "dev:alm": "npm --workspace alm run dev",
     "dev:router": "npm --workspace router run dev",
     "dev:executor": "npm --workspace executor run dev",
-    "dev:all": "concurrently -n pm,alm,router,executor -c green,blue,magenta,yellow \"npm:dev:pm\" \"npm:dev:alm\" \"npm:dev:router\" \"npm:dev:executor\""
+    "dev:all": "concurrently -n pm,alm,router,executor -c green,blue,magenta,yellow \"npm:dev:pm\" \"npm:dev:alm\" \"npm:dev:router\" \"npm:dev:executor\"",
+    "start:pm": "tsx pm/src/index.ts",
+    "start:alm": "tsx alm/src/index.ts",
+    "start:router": "tsx router/src/index.ts",
+    "start:executor": "tsx executor/src/index.ts",
+    "start": "concurrently -n pm,alm,router,executor -c green,blue,magenta,yellow \"npm:start:pm\" \"npm:start:alm\" \"npm:start:router\" \"npm:start:executor\""
   },
   "devDependencies": {
     "concurrently": "^9.0.0",

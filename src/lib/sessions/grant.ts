@@ -84,6 +84,7 @@ export async function grantSession(
   const enableAction = getEnableSessionsAction({
     sessions: [
       {
+        chainId: BigInt(CHAIN_ID[chain]),
         sessionValidator: sessionsValidator.address as Address,
         sessionValidatorInitData: encodeAbiParameters(
           [{ type: 'address' }],
@@ -104,7 +105,7 @@ export async function grantSession(
       calls: [
         {
           to: enableAction.target as Address,
-          value: enableAction.value ?? 0n,
+          value: (enableAction.value as bigint | undefined) ?? 0n,
           data: enableAction.callData as Hex,
         },
       ],

@@ -8,3 +8,4 @@ dist/
 # Prisma generated client
 shared/node_modules/
 shared/prisma/migrations/.tmp/
+.vercel
