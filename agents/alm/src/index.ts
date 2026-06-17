@@ -1,16 +1,20 @@
 // Active Liquidity Manager.
 //
-// Watches each user's Uniswap v4 LP positions on a tick. When a position
-// drifts out of its optimal range or inventory shifts past a threshold,
-// publishes a RebalanceIntent on AXL for the Router.
+// Tick every minute: for each user with an active ALM session, read
+// their Uniswap v4 positions, classify them (out-of-range / near-
+// boundary / idle), and publish a RebalanceIntent for each drift.
 //
-// This commit boots + heartbeats. v4 SDK integration lands in commit 4.
+// All onchain reads + heuristics live in ./positions.ts and ./strategy.ts;
+// the per-tenant iterator + AXL publish live in ./tick.ts. This file
+// just wires the boot sequence.
 
 import { bootAgent, startHeartbeat, TOPICS } from '@swarm/shared';
+import { startTick } from './tick.js';
 
 async function main() {
   const ctx = await bootAgent('alm');
   const stopHeartbeat = startHeartbeat(ctx);
+  const stopTick = startTick(ctx);
 
   ctx.log.info('ready', {
     role: 'alm',
@@ -20,6 +24,7 @@ async function main() {
 
   process.stdin.resume();
   void stopHeartbeat;
+  void stopTick;
 }
 
 main().catch((err: unknown) => {
