@@ -9,3 +9,4 @@ export * from './chain.js';
 export * from './types.js';
 export * from './boot.js';
 export * from './keys.js';
+export * from './intent-poll.js';

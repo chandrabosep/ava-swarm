@@ -1,78 +1,112 @@
-// Thin client over Gensyn's Agent eXchange Layer (AXL).
+// Client for the real Gensyn AXL node API.
 //
-// AXL runs as a local binary that exposes an HTTP API on localhost. Each
-// agent process talks to its own AXL daemon. AXL handles encryption,
-// peer discovery, and routing — we just send JSON over HTTP.
+// AXL exposes a small HTTP surface on its local port:
+//   GET  /topology   — connected peers
+//   POST /send       — send a message to one peer
+//   GET  /recv       — pull next message from this node's inbox
 //
-// API surface used here (subset of AXL's full surface — we expand as we
-// need it):
-//   POST /a2a/send        — point-to-point message to a known peer
-//   POST /pubsub/publish  — publish to a topic
-//   GET  /pubsub/subscribe?topic=... — long-poll subscribe
-//   GET  /peers           — list known peers
-//   GET  /identity        — this node's peer id + pubkey
-//
-// See https://docs.gensyn.ai/tech/agent-exchange-layer for the full API.
+// We model "topics" on top of /send + /recv: each agent broadcasts to
+// every known peer via /send, and the receiver tags inbound messages
+// with the topic + payload it carried. Cheaper than building a real
+// pubsub layer, good enough for swarm gossip at this scale.
 
 import type { AgentRole } from './db.js';
 
-export interface AxlIdentity {
-  peerId: string;
-  pubkey: string;
-}
-
-export interface AxlPeer {
-  peerId: string;
-  agent?: AgentRole;
-  endpoints?: string[];
+export interface TopologyEntry {
+  publicKey: string;
+  address?: string;
 }
 
 export interface SendOptions {
-  /** Peer id of the recipient. */
   to: string;
-  /** Application-level message kind, e.g. 'intent.submit'. */
-  kind: string;
-  payload: unknown;
-}
-
-export interface PublishOptions {
-  topic: string;
-  payload: unknown;
+  data: string;
 }
 
 export interface InboundMessage<T = unknown> {
-  /** Sender peer id. */
   from: string;
   kind: string;
   payload: T;
-  /** AXL-attached envelope metadata. */
   receivedAt: string;
 }
 
+interface Envelope {
+  topic: string;
+  kind: string;
+  payload: unknown;
+  ts: number;
+}
+
 export class AxlClient {
+  private peerCache: TopologyEntry[] = [];
+  private peerCacheAt = 0;
+  private static readonly PEER_TTL_MS = 5_000;
+
   constructor(public readonly endpoint: string) {}
 
-  async identity(): Promise<AxlIdentity> {
-    return this.get('/identity');
+  async topology(): Promise<TopologyEntry[]> {
+    const res = await fetch(new URL('/topology', this.endpoint));
+    if (!res.ok) throw new Error(`AXL /topology ${res.status}`);
+    const body = (await res.json()) as
+      | TopologyEntry[]
+      | { peers: TopologyEntry[] };
+    return Array.isArray(body) ? body : (body.peers ?? []);
   }
 
-  async peers(): Promise<AxlPeer[]> {
-    return this.get('/peers');
+  /** AXL has no /identity endpoint — boot uses topology() to confirm liveness. */
+  async identity(): Promise<{ peerId: string; pubkey: string }> {
+    await this.topology();
+    return { peerId: 'local', pubkey: '0x' };
+  }
+
+  async peers(): Promise<TopologyEntry[]> {
+    if (Date.now() - this.peerCacheAt < AxlClient.PEER_TTL_MS) {
+      return this.peerCache;
+    }
+    this.peerCache = await this.topology();
+    this.peerCacheAt = Date.now();
+    return this.peerCache;
   }
 
   async send(opts: SendOptions): Promise<{ ok: true }> {
-    return this.post('/a2a/send', opts);
+    const res = await fetch(new URL('/send', this.endpoint), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: opts.to, data: opts.data }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`AXL /send ${res.status}: ${text}`);
+    }
+    return { ok: true };
   }
 
-  async publish(opts: PublishOptions): Promise<{ ok: true }> {
-    return this.post('/pubsub/publish', opts);
+  async publish(opts: { topic: string; payload: unknown }): Promise<{ ok: true }> {
+    // If AXL is offline, swallow the error: the swarm degrades gracefully
+    // (Router/Executor poll the DB for new intents instead of relying on
+    // gossip). We don't want a missing peer mesh to nuke a tick.
+    let peers: TopologyEntry[];
+    try {
+      peers = await this.peers();
+    } catch {
+      return { ok: true };
+    }
+    const envelope: Envelope = {
+      topic: opts.topic,
+      kind: opts.topic,
+      payload: opts.payload,
+      ts: Date.now(),
+    };
+    const data = JSON.stringify(envelope);
+    await Promise.all(
+      peers.map((p) =>
+        this.send({ to: p.publicKey, data }).catch(() => {
+          /* one bad peer shouldn't break the broadcast */
+        }),
+      ),
+    );
+    return { ok: true };
   }
 
-  /**
-   * Long-poll subscribe. Yields one InboundMessage at a time. Caller is
-   * expected to wrap in a `for await` loop. Restarts on transient errors
-   * with exponential backoff up to 30s.
-   */
   async *subscribe<T = unknown>(
     topic: string,
     abort?: AbortSignal,
@@ -80,28 +114,29 @@ export class AxlClient {
     let backoff = 250;
     while (!abort?.aborted) {
       try {
-        const url = new URL('/pubsub/subscribe', this.endpoint);
-        url.searchParams.set('topic', topic);
-        const res = await fetch(url, { signal: abort });
-        if (!res.ok) throw new Error(`AXL subscribe ${res.status}`);
-        if (!res.body) throw new Error('AXL subscribe: no body');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          // Newline-delimited JSON.
-          let nl: number;
-          while ((nl = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (!line) continue;
-            yield JSON.parse(line) as InboundMessage<T>;
+        const res = await fetch(new URL('/recv', this.endpoint), { signal: abort });
+        if (!res.ok) throw new Error(`AXL /recv ${res.status}`);
+        const body = (await res.json()) as
+          | { from: string; data: string }
+          | Array<{ from: string; data: string }>;
+        const items = Array.isArray(body) ? body : [body];
+        for (const item of items) {
+          if (!item?.data) continue;
+          let envelope: Envelope;
+          try {
+            envelope = JSON.parse(item.data) as Envelope;
+          } catch {
+            continue;
           }
+          if (envelope.topic !== topic) continue;
+          yield {
+            from: item.from,
+            kind: envelope.kind,
+            payload: envelope.payload as T,
+            receivedAt: new Date().toISOString(),
+          };
         }
-        backoff = 250; // reset after a clean disconnect
+        backoff = 250;
       } catch (err) {
         if (abort?.aborted) return;
         await new Promise((r) => setTimeout(r, backoff));
@@ -109,49 +144,16 @@ export class AxlClient {
       }
     }
   }
-
-  private async get<T>(path: string): Promise<T> {
-    const res = await fetch(new URL(path, this.endpoint));
-    if (!res.ok) throw new Error(`AXL ${path} ${res.status}`);
-    return (await res.json()) as T;
-  }
-
-  private async post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(new URL(path, this.endpoint), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`AXL ${path} ${res.status}: ${text}`);
-    }
-    return (await res.json()) as T;
-  }
 }
 
-/**
- * Canonical AXL pubsub topics used across the swarm. Centralized so a
- * typo in one agent doesn't silently send into a black hole.
- */
 export const TOPICS = {
-  /** PM publishes target-allocation messages. */
   pmAllocation: 'swarm.pm.allocation',
-  /** ALM publishes rebalance intents. */
   almRebalance: 'swarm.alm.rebalance',
-  /** Router publishes routed intents (Executor consumes). */
   routerRouted: 'swarm.router.routed',
-  /** Executor publishes execution receipts (everyone consumes for audit). */
   executorReceipt: 'swarm.executor.receipt',
-  /** Anyone can listen for status heartbeats. */
   heartbeat: 'swarm.heartbeat',
-  /**
-   * OTC pre-trade gossip. Routers publish pending swaps here so peers
-   * can match opposite intents internally before routing to Uniswap.
-   * The novel primitive — agents settle directly when possible, use
-   * Uniswap as the liquidity backstop instead of the first hop.
-   */
   otcAdvertise: 'swarm.otc.advertise',
-  /** Two-way confirmation of a proposed match. */
   otcConfirm: 'swarm.otc.confirm',
 } as const;
+
+export type { AgentRole };
