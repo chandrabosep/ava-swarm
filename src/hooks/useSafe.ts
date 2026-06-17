@@ -3,9 +3,11 @@
 // useSafe()      — predicted address + per-chain deployment state for the
 //                  user's currently-connected chain. Powers the
 //                  SmartAccountCard.
-// useSessions()  — which session keys exist in localStorage for the
-//                  current owner. Returns just the public addresses;
-//                  decryption happens lazily when an agent needs to sign.
+// useSessions()  — Model B: returns the agent service addresses from the
+//                  static config when the Safe is activated; empty when
+//                  not. The "is granted" question maps to "is the Safe
+//                  deployed + module installed" — Phase A's grant flow
+//                  registers all sessions atomically.
 
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -18,7 +20,7 @@ import {
   readDeploymentState,
   chainFromId,
 } from '@/lib/safe';
-import { listSessionAddresses } from '@/lib/sessions';
+import { SWARM_SERVICE_ADDRESSES } from '@/config/swarm';
 import type { SessionAgent } from '@/types/swarm';
 
 const THIRTY_SEC = 30_000;
@@ -55,17 +57,25 @@ export interface SessionAddresses {
   executor?: Address;
 }
 
-export function useSessions() {
-  const { address: owner } = useAccount();
-  return useQuery({
-    queryKey: ['sessions', owner?.toLowerCase()],
-    queryFn: async (): Promise<SessionAddresses> => {
-      if (!owner) return {};
-      return listSessionAddresses(owner) as SessionAddresses;
-    },
-    enabled: !!owner,
-    staleTime: 0,
-  });
+/**
+ * Model B: when the Safe is activated, the granted session addresses are
+ * always the agent service addresses. We don't need a per-user localStorage
+ * lookup anymore.
+ */
+export function useSessions(): { data: SessionAddresses | undefined; isLoading: boolean } {
+  const safe = useSafe();
+  const data = useMemo<SessionAddresses | undefined>(() => {
+    if (!safe.data) return undefined;
+    const ready =
+      safe.data.deployment.deployed &&
+      safe.data.deployment.smartSessionsInstalled;
+    if (!ready) return {};
+    return {
+      alm: SWARM_SERVICE_ADDRESSES.alm,
+      executor: SWARM_SERVICE_ADDRESSES.executor,
+    };
+  }, [safe.data]);
+  return { data, isLoading: safe.isLoading };
 }
 
 export function useSessionAddress(agent: SessionAgent): Address | undefined {

@@ -1,16 +1,9 @@
 // Barrel re-export — components and hooks import from `@/lib/sessions`
 // and stay decoupled from the file layout inside.
-
-export {
-  generateSessionKeypair,
-  storeSession,
-  loadSession,
-  listSessionAddresses,
-  clearSession,
-  clearAllSessions,
-  type SessionKeypair,
-  type StoreParams as StoreSessionParams,
-} from './storage';
+//
+// Model B note: storage.ts (per-user keypair generation + AES-encrypted
+// localStorage) was removed. Service privkeys live on the agent servers,
+// addresses are hardcoded in src/config/swarm.ts.
 
 export {
   CONTRACTS,

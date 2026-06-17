@@ -86,12 +86,36 @@ agents/
 See `.env.example`. The encryption key, Supabase URLs, sponsor API keys,
 and AXL endpoints all live there.
 
-## Multi-tenant model
+## Multi-tenant model (Model B — shared service keys)
 
-Agents discover users via onchain `SessionEnabled` events emitted by the
-Smart Sessions module. When a user activates the swarm in the extension
-and grants a session key whose pubkey matches an agent's service pubkey,
-the agent enrolls the user in its DB and starts serving them.
+Each agent holds **one fixed keypair** loaded from env at boot
+(`PM_/ALM_/ROUTER_/EXECUTOR_SERVICE_PRIVKEY`). All users grant their
+Safe's Smart Sessions policy to the same set of public addresses. The
+agent uses its single keypair to sign UserOps for any user; the per-user
+caps + whitelists are enforced onchain by the Smart Sessions module.
 
-No login flow, no API keys per user — onchain state is the source of
-truth for "who does this agent serve?"
+**Why this over per-user keypairs (Model A):**
+- No keypair-transmission flow needed (extension never holds privkeys).
+- One round of env management instead of N (where N = number of users).
+- Simpler audit story — every UserOp from this agent is signed by one
+  known address, easy to grep onchain.
+
+**Compromise model:** if a service privkey leaks, an attacker can sign
+UserOps for every user who granted to that pubkey — but ONLY within each
+user's per-user policy. With $1k/tx + $10k/day caps and a contract
+whitelist, the worst case is bounded; the user's funds in the Safe
+outside those caps are untouchable.
+
+**User discovery:** agents listen for the Smart Sessions module's
+`SessionEnabled` event filtered by their own service pubkey. When a Safe
+emits it, the agent enrolls the user in its DB and starts serving them.
+No login, no API keys — onchain truth.
+
+## First-time deployment
+
+1. Generate four privkeys: `openssl rand -hex 32` × 4.
+2. Put them in `agents/.env` as `{PM,ALM,ROUTER,EXECUTOR}_SERVICE_PRIVKEY`.
+3. Boot any agent (`npm run dev:executor`) — it logs its derived service
+   address.
+4. Copy the four addresses into `src/config/swarm.ts` in the extension.
+5. Rebuild the extension. Now extensions and agents agree on identity.
