@@ -12,6 +12,7 @@
 import {
   bootAgent,
   startHeartbeat,
+  startIntentPoll,
   TOPICS,
   type AllocationIntent,
   type AgentContext,
@@ -30,8 +31,10 @@ import {
   settleMatch,
 } from './otc.js';
 
-/** Phase B-1: settle every intent on the user's primary chain. */
-const PRIMARY_CHAIN: SupportedChain = 'unichain';
+/** Phase B-1: settle every intent on the user's primary chain. Override
+ *  with PRIMARY_CHAIN env if you need to demo on a different chain. */
+const PRIMARY_CHAIN: SupportedChain =
+  (process.env.PRIMARY_CHAIN as SupportedChain | undefined) ?? 'mainnet';
 
 async function main() {
   const ctx = await bootAgent('router');
@@ -53,6 +56,22 @@ async function main() {
       }
     }
   })();
+
+  // DB-poll fallback — fires whether or not AXL is up. Same handler as
+  // the AXL subscription path; intent-poll claims rows atomically so we
+  // can run both without double-processing.
+  startIntentPoll<AllocationIntent>({
+    fromAgent: 'pm',
+    pendingStatus: 'pending',
+    inFlightStatus: 'netted',
+    completedStatus: 'netted',
+    failedStatus: 'failed',
+    log: (level, msg, meta) => ctx.log[level](msg, meta),
+    handle: async (row) => {
+      if (row.payload?.kind !== 'allocation') return;
+      await handleAllocation(ctx, row.safeAddress, row.payload);
+    },
+  });
 
   // OTC peer advert inbox — runs continuously, attempts cross-tenant matches.
   void consumeAdverts(ctx);

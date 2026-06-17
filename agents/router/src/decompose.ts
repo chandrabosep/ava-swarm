@@ -18,14 +18,23 @@ export interface PairSwap {
   tokenOutSymbol: Symbol;
   tokenIn: `0x${string}`;
   tokenOut: `0x${string}`;
-  /** USD value being moved. Translated to base units by Executor's quoter. */
+  /** USD value being moved. */
   notionalUsd: number;
+  /** USD per whole tokenIn (e.g. ETH at $3,000 → 3000). Used by dispatch
+   *  to compute the on-wire amountIn in tokenIn's smallest unit. */
+  tokenInPriceUsd: number;
+  /** Decimals for tokenIn (18 for ETH/WETH/UNI, 8 for WBTC, 6 for USDC). */
+  tokenInDecimals: number;
 }
 
 export interface CurrentSlice {
   symbol: Symbol;
   /** USD value currently held. */
   valueUsd: number;
+  /** USD per whole token (USD value ÷ token quantity). */
+  priceUsd: number;
+  /** Token decimals. */
+  decimals: number;
 }
 
 export function decompose(
@@ -41,16 +50,30 @@ export function decompose(
 
   // Compute USD delta per symbol — positive = we want to acquire, negative = we want to sell.
   const targetMap = new Map(allocation.targets.map((t) => [t.symbol, t.weight]));
-  const currentMap = new Map(current.map((c) => [c.symbol, c.valueUsd]));
-  const symbols = new Set<string>([...targetMap.keys(), ...currentMap.keys()]);
+  const currentMap = new Map(current.map((c) => [c.symbol, c]));
+  const symbols = new Set<string>([
+    ...targetMap.keys(),
+    ...current.map((c) => c.symbol),
+  ]);
 
-  const deltas: { symbol: Symbol; usd: number }[] = [];
+  const deltas: {
+    symbol: Symbol;
+    usd: number;
+    priceUsd: number;
+    decimals: number;
+  }[] = [];
   for (const sym of symbols) {
     const targetWeight = targetMap.get(sym) ?? 0;
-    const currentValue = currentMap.get(sym) ?? 0;
+    const slice = currentMap.get(sym as Symbol);
+    const currentValue = slice?.valueUsd ?? 0;
     const usd = targetWeight * total - currentValue;
     if (Math.abs(usd) > tolerance) {
-      deltas.push({ symbol: sym as Symbol, usd });
+      deltas.push({
+        symbol: sym as Symbol,
+        usd,
+        priceUsd: slice?.priceUsd ?? fallbackPrice(sym as Symbol),
+        decimals: slice?.decimals ?? defaultDecimals(sym as Symbol),
+      });
     }
   }
 
@@ -73,6 +96,8 @@ export function decompose(
       tokenIn: resolve(sell.symbol, chain),
       tokenOut: resolve(buy.symbol, chain),
       notionalUsd: notional,
+      tokenInPriceUsd: sell.priceUsd,
+      tokenInDecimals: sell.decimals,
     });
 
     sell.usd -= notional;
@@ -82,4 +107,24 @@ export function decompose(
   }
 
   return swaps;
+}
+
+function fallbackPrice(sym: Symbol): number {
+  switch (sym) {
+    case 'ETH':
+    case 'WETH':
+      return 3000;
+    case 'WBTC':
+      return 60000;
+    case 'USDC':
+      return 1;
+    case 'UNI':
+      return 8;
+  }
+}
+
+function defaultDecimals(sym: Symbol): number {
+  if (sym === 'WBTC') return 8;
+  if (sym === 'USDC') return 6;
+  return 18;
 }

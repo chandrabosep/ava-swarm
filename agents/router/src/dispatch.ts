@@ -24,17 +24,23 @@ export interface DispatchParams {
 export async function dispatch(params: DispatchParams): Promise<void> {
   const { ctx, safeAddress, originIntentId, swap } = params;
 
-  // Quote-driven amountIn would be ideal, but Trading API does that work
-  // when Executor calls /quote — we just hand it the USD notional and
-  // let it convert to base units. Encode notional as the amountIn for
-  // now; Executor's quote step decodes.
+  // Convert USD notional → tokenIn's smallest unit using the live price
+  // we got from Zerion. Uniswap's Trading API expects amountIn in token
+  // base units (e.g. wei for ETH). Without this conversion the quote
+  // returns "no quotes available" because, for an 18-decimal asset, the
+  // raw USD-as-microunits value is dust.
+  const tokensToSwap = swap.notionalUsd / swap.tokenInPriceUsd;
+  const amountInRaw = BigInt(
+    Math.floor(tokensToSwap * Math.pow(10, swap.tokenInDecimals)),
+  );
+
   const intent: RoutedIntent = {
     kind: 'routed',
     chain: swap.chain,
     venue: 'uniswap-trade-api',
     tokenIn: swap.tokenIn,
     tokenOut: swap.tokenOut,
-    amountIn: String(Math.round(swap.notionalUsd * 1_000_000)), // 6-dec USD
+    amountIn: amountInRaw.toString(),
     minAmountOut: '0', // Executor enforces via Uniswap's minOut on /quote
     notionalUsd: swap.notionalUsd,
     origin: originIntentId,
