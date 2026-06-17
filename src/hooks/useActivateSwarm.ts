@@ -1,7 +1,11 @@
-// One mutation to rule them all: deploys the Safe, installs the Smart
-// Sessions module, generates the two session keypairs, persists them
-// encrypted, and grants their on-chain policies. Drives the
-// "Activate Swarm" CTA.
+// Activate Swarm — Model B.
+//
+// Single mutation that deploys the Safe, installs the Smart Sessions
+// module, and grants the agents' service addresses (read from
+// src/config/swarm.ts) the policies defined in src/lib/sessions/policies.
+//
+// The extension never holds session privkeys — the agents do. This is
+// the security improvement Model B buys us over Model A.
 
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -15,11 +19,10 @@ import {
 } from '@/lib/safe';
 import {
   defaultPolicyFor,
-  generateSessionKeypair,
   grantSession,
-  storeSession,
   type GrantStage,
 } from '@/lib/sessions';
+import { SWARM_SERVICE_ADDRESSES } from '@/config/swarm';
 import type { SessionAgent } from '@/types/swarm';
 
 export type SwarmActivationStage =
@@ -55,19 +58,24 @@ export function useActivateSwarm() {
       // 2. Build the SmartAccountClient once for both grants
       const swarmClient = await createSwarmClient({ chain, signer: walletClient });
 
-      // 3. For each agent: generate a keypair, persist encrypted, grant
-      //    its policy onchain. Sequential — Smart Sessions doesn't merge
-      //    multiple session enables into one UserOp cleanly in the
-      //    current SDK, and a fresh signature per agent is cheap UX.
+      // 3. Grant each agent its policy. No keypair generation: the agent
+      //    holds the privkey on its server, we just authorize its
+      //    pre-published service address to act under our policy.
       for (const agent of AGENTS) {
-        const keypair = generateSessionKeypair();
-        await storeSession({ agent, owner, keypair });
+        const sessionAddress = SWARM_SERVICE_ADDRESSES[agent];
+        if (
+          sessionAddress === '0x0000000000000000000000000000000000000000'
+        ) {
+          throw new Error(
+            `Service address for ${agent} not configured. Update src/config/swarm.ts.`,
+          );
+        }
         const policy = defaultPolicyFor(agent, chain);
         await grantSession({
           swarmClient,
           chain,
           agent,
-          sessionAddress: keypair.address,
+          sessionAddress,
           policy,
           onProgress: (s) => setStage({ type: 'granting', agent, stage: s }),
         });

@@ -1,23 +1,30 @@
-// Per-tenant session lookup.
+// Per-tenant session lookup — Model B.
 //
-// Loads the user's encrypted Executor session privkey from Postgres,
-// decrypts in-memory, returns a viem LocalAccount. The privkey never
-// leaves this process; the cleartext is GC'd as soon as the LocalAccount
-// is constructed. Postgres + AGENT_PRIVKEY_ENCRYPTION_KEY together form
-// the "two factors" — DB compromise alone or env compromise alone is
-// insufficient to forge UserOps.
+// We sign every user's UserOps with the same Executor service keypair
+// loaded from env (see @swarm/shared/keys). This function just verifies
+// that the user has an active Session row pointing at our service
+// address — i.e., they actually granted us authority onchain — and
+// returns the shared signer.
 
-import { privateKeyToAccount } from 'viem/accounts';
 import type { LocalAccount } from 'viem';
 
-import { db, decryptPrivkey, type Session } from '@swarm/shared';
+import {
+  db,
+  serviceAccount,
+  serviceAddress,
+  type Session,
+} from '@swarm/shared';
 
 export interface SessionContext {
   session: Session;
   account: LocalAccount;
 }
 
-/** Returns null if the user has no Executor session, or it's expired. */
+/**
+ * Returns null if the user has no Executor session, the session is
+ * expired, or it points at a different service address than ours
+ * (defensive — would only happen if env-rotated and DB stale).
+ */
 export async function loadExecutorSession(
   safeAddress: string,
 ): Promise<SessionContext | null> {
@@ -29,8 +36,12 @@ export async function loadExecutorSession(
   if (!session) return null;
   if (session.validUntil.getTime() < Date.now()) return null;
 
-  const privkey = decryptPrivkey(session.encryptedPrivkey);
-  const account = privateKeyToAccount(privkey);
+  const ours = serviceAddress('executor');
+  if (session.sessionAddress.toLowerCase() !== ours.toLowerCase()) {
+    // User granted to a different Executor — probably a previous
+    // deployment or someone else's swarm. Don't sign.
+    return null;
+  }
 
-  return { session, account };
+  return { session, account: serviceAccount('executor') };
 }

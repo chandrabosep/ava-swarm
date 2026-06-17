@@ -47,19 +47,19 @@ model User {
 }
 
 model Session {
-  id               String    @id @default(uuid())
-  safeAddress      String    @map("safe_address")
-  agent            AgentRole
-  /// Public address of the session keypair the agent holds for this user.
-  sessionAddress   String    @map("session_address")
-  /// AES-GCM encrypted private key (base64). Decrypted only at sign-time.
-  encryptedPrivkey String    @map("encrypted_privkey")
+  id             String    @id @default(uuid())
+  safeAddress    String    @map("safe_address")
+  agent          AgentRole
+  /// Public address of THIS agent's service keypair, mirrored from
+  /// the onchain Smart Sessions grant. Same value across all users for
+  /// a given agent — see Model B in agents/README.md.
+  sessionAddress String    @map("session_address")
   /// Stable hash of the policy granted onchain — for change detection.
-  policyHash       String    @map("policy_hash")
-  grantedAt        DateTime  @default(now()) @map("granted_at")
-  validUntil       DateTime  @map("valid_until")
+  policyHash     String    @map("policy_hash")
+  grantedAt      DateTime  @default(now()) @map("granted_at")
+  validUntil     DateTime  @map("valid_until")
 
-  user             User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user           User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
 
   @@unique([safeAddress, agent])
   @@index([agent, validUntil])

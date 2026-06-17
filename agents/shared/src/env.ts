@@ -30,8 +30,9 @@ export const env = {
     return required(map[agent]);
   },
 
-  // Crypto
-  encryptionKey: () => required('AGENT_PRIVKEY_ENCRYPTION_KEY'),
+  // (Removed) AGENT_PRIVKEY_ENCRYPTION_KEY — used in Model A for per-user
+  // privkey encryption. Model B uses a single service keypair per agent
+  // (see PM_SERVICE_PRIVKEY etc. and src/keys.ts).
 
   // Onchain RPCs
   rpc: (chain: 'mainnet' | 'base' | 'unichain'): string =>

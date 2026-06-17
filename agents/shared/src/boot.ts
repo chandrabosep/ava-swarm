@@ -9,6 +9,7 @@ import { db, disconnectDb, type AgentRole } from './db.js';
 import { AxlClient, TOPICS } from './axl.js';
 import { env } from './env.js';
 import { createLogger, type Logger } from './log.js';
+import { serviceAddress } from './keys.js';
 
 export interface AgentContext {
   role: AgentRole;
@@ -21,6 +22,17 @@ export interface AgentContext {
 export async function bootAgent(role: AgentRole): Promise<AgentContext> {
   const log = createLogger(role);
   log.info('booting');
+
+  // Service identity — log the public address so the operator can paste
+  // it into the extension's hardcoded service-address constants.
+  try {
+    const addr = serviceAddress(role);
+    log.info('service identity', { address: addr });
+  } catch (err) {
+    log.warn('service privkey missing — agent cannot sign', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // AXL — non-fatal if down; agent operates in degraded mode.
   const axl = new AxlClient(env.axlEndpoint(role));

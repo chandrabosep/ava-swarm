@@ -1,9 +1,9 @@
-// Expand the swarm to an additional chain.
+// Expand the swarm to an additional chain — Model B.
 //
-// Steps: switch network, deploy Safe + install Smart Sessions there,
-// re-grant the existing session keypairs (which already exist in
-// localStorage from the original activation) for that chain. After
-// this runs the user has a Safe at the same address on N+1 chains.
+// Switch network, deploy Safe + install Smart Sessions, re-grant the
+// agents' service addresses for that chain. Service keypairs are the
+// same across chains (they're held by the agent server, not per-chain),
+// so the only per-chain work is the onchain registration.
 
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -17,9 +17,9 @@ import {
 import {
   defaultPolicyFor,
   grantSession,
-  listSessionAddresses,
   type GrantStage,
 } from '@/lib/sessions';
+import { SWARM_SERVICE_ADDRESSES } from '@/config/swarm';
 import {
   CHAIN_ID,
   type SessionAgent,
@@ -49,27 +49,28 @@ export function useExpandToChain() {
         throw new Error('Wallet not connected.');
       }
 
-      // 1. Make the wallet switch to the target chain. wagmi prompts the
-      //    user; if they reject, this throws and we surface the error.
       setStage({ type: 'switching' });
       await switchChainAsync({ chainId: CHAIN_ID[target] });
 
-      // 2. Deploy Safe + install module on the new chain.
       await activateOnChain({
         chain: target,
         signer: walletClient,
         onProgress: (s) => setStage({ type: 'deploying', stage: s }),
       });
 
-      // 3. Re-grant existing session keys on the new chain.
       const swarmClient = await createSwarmClient({
         chain: target,
         signer: walletClient,
       });
-      const existing = listSessionAddresses(owner);
+
+      // Same service addresses on this chain. The agents already hold
+      // their keypairs from env; we just register them with this Safe's
+      // Smart Sessions module on the new chain.
       for (const agent of AGENTS) {
-        const sessionAddress = existing[agent];
-        if (!sessionAddress) continue;
+        const sessionAddress = SWARM_SERVICE_ADDRESSES[agent];
+        if (
+          sessionAddress === '0x0000000000000000000000000000000000000000'
+        ) continue;
         const policy = defaultPolicyFor(agent, target);
         await grantSession({
           swarmClient,
