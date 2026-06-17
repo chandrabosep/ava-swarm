@@ -92,10 +92,52 @@ export type EventKind =
   | 'intent.created'
   | 'intent.netted'
   | 'intent.routed'
+  | 'intent.matched'
   | 'intent.executed'
   | 'intent.failed'
+  | 'otc.advertised'
+  | 'otc.confirmed'
   | 'agent.heartbeat'
   | 'agent.tick';
+
+// --- OTC matching --------------------------------------------------------
+
+/**
+ * Router → AXL: "I have a swap pending — anyone want the opposite side?"
+ *
+ * Other Routers (serving other tenants) listen, look for opposite intents
+ * in their own pending pool, propose a match. If both sides confirm, the
+ * swap settles internally instead of hitting Uniswap.
+ */
+export interface OtcAdvert {
+  /** Stable id for handshake correlation. */
+  advertId: string;
+  /** Chain we want to settle on. */
+  chain: SupportedChain;
+  /** Which Safe is offering this side. */
+  safeAddress: string;
+  /** Token being sold by this Safe. */
+  tokenIn: string;
+  /** Token wanted in return. */
+  tokenOut: string;
+  /** USD-denominated notional, for size matching across decimals. */
+  notionalUsd: number;
+  /** Unix ms — advert is invalid after this. */
+  expiresAt: number;
+}
+
+/** Reply to an OtcAdvert proposing or accepting a match. */
+export interface OtcConfirm {
+  /** Echoes the advertId we're matching. */
+  advertId: string;
+  /** Our own advert id, so the original poster can match it back. */
+  counterAdvertId: string;
+  /** Confirming side's Safe address. */
+  safeAddress: string;
+  /** Agreed mid-price as a 1e18 fixed-point ratio (tokenOut per tokenIn). */
+  midPrice18: string;
+  ack: 'accept' | 'reject';
+}
 
 // --- AXL message envelope -------------------------------------------------
 
