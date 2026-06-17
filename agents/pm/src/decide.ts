@@ -1,17 +1,18 @@
 // LLM-driven allocation decision.
 //
-// Input:  PortfolioSnapshot + per-user risk envelope (defaults for Phase B).
+// We call Kimi (Moonshot AI) over its OpenAI-compatible Chat Completions
+// endpoint. No SDK — plain fetch keeps the dep tree small and the call
+// shape obvious.
+//
+// Reference: https://platform.moonshot.ai/docs/api/chat
+//
+// Input:  PortfolioSnapshot + per-user risk envelope (defaults for
+//         Phase B; configurable in Phase C).
 // Output: AllocationIntent — target weights per symbol, with a tolerance.
 //
-// We use Anthropic's Messages API directly. The system prompt encodes:
-//   - the user's risk policy (max drawdown per day, max single position, …)
-//   - the universe of allowed tokens (for Phase B-1 we hardcode)
-//   - the requirement to return strictly JSON in a known schema
-//
-// We tolerate the occasional non-JSON response by wrapping in a
-// extract-JSON-from-text fallback.
-
-import Anthropic from '@anthropic-ai/sdk';
+// We tolerate the occasional non-JSON response (Kimi sometimes wraps in
+// prose) by extracting the first balanced JSON object from the message
+// text.
 
 import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
@@ -23,7 +24,7 @@ export interface DecideParams {
   snapshot: PortfolioSnapshot;
   /** Soft rebalance threshold — Router only acts on diffs > this. */
   toleranceBps: number;
-  /** Free-form market context (news headlines, signals). Phase B-2 will fill this. */
+  /** Free-form market context (news headlines, signals). */
   context?: string;
 }
 
@@ -52,21 +53,43 @@ Rules:
 6. Be quantitative in the rationale. Reference current weights and
    24h moves you observed.`;
 
+interface ChatCompletionResponse {
+  choices: Array<{
+    message: { role: string; content: string };
+    finish_reason?: string;
+  }>;
+}
+
 export async function decideAllocation(
   params: DecideParams,
 ): Promise<AllocationIntent> {
-  const client = new Anthropic({ apiKey: env.anthropicApiKey() });
-
   const userPrompt = buildUserPrompt(params);
 
-  const res = await client.messages.create({
-    model: env.anthropicModel(),
-    max_tokens: 800,
-    system: SYSTEM,
-    messages: [{ role: 'user', content: userPrompt }],
+  const res = await fetch(`${env.kimiBaseUrl()}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${env.kimiApiKey()}`,
+    },
+    body: JSON.stringify({
+      model: env.kimiModel(),
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 800,
+    }),
   });
 
-  const text = textFromMessage(res);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Kimi ${res.status}: ${text || res.statusText}`);
+  }
+
+  const body = (await res.json()) as ChatCompletionResponse;
+  const text = body.choices?.[0]?.message?.content ?? '';
+
   const parsed = extractJson(text) as {
     rationale?: string;
     targets?: Array<{ symbol: string; weight: number }>;
@@ -111,13 +134,6 @@ function buildUserPrompt(params: DecideParams): string {
     lines.push('', 'Market context:', context);
   }
   return lines.join('\n');
-}
-
-function textFromMessage(msg: Anthropic.Message): string {
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
 }
 
 /** Find the first {...} JSON object in a string. Tolerates prose around it. */

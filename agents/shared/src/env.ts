@@ -46,9 +46,10 @@ export const env = {
     optional('UNISWAP_API_BASE', 'https://trade-api.gateway.uniswap.org/v1')!,
   pimlicoApiKey: () => optional('PIMLICO_API_KEY'),
 
-  // PM / LLM
-  anthropicApiKey: () => required('ANTHROPIC_API_KEY'),
-  anthropicModel: () => optional('ANTHROPIC_MODEL', 'claude-sonnet-4-6')!,
+  // PM / LLM — Kimi (Moonshot AI), OpenAI-compatible chat completions
+  kimiApiKey: () => required('KIMI_API_KEY'),
+  kimiModel: () => optional('KIMI_MODEL', 'kimi-k2-0905-preview')!,
+  kimiBaseUrl: () => optional('KIMI_BASE_URL', 'https://api.moonshot.ai/v1')!,
 
   // Zerion
   zerionProxyUrl: () => required('ZERION_PROXY_URL'),
