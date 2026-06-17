@@ -1,0 +1,8 @@
+{
+  "private_key_file": "/Users/chandrabose/shiva/open-agents/defi-swarm-newtab/agents/axl-node/./nodes/pm/private.pem",
+  "data_dir":         "/Users/chandrabose/shiva/open-agents/defi-swarm-newtab/agents/axl-node/./nodes/pm/data",
+  "tls_port":         9101,
+  "api_port":         9001,
+  "tcp_port":         7001,
+  "bootstrap_peers":  []
+}
