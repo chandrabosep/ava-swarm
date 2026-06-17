@@ -145,4 +145,13 @@ export const TOPICS = {
   executorReceipt: 'swarm.executor.receipt',
   /** Anyone can listen for status heartbeats. */
   heartbeat: 'swarm.heartbeat',
+  /**
+   * OTC pre-trade gossip. Routers publish pending swaps here so peers
+   * can match opposite intents internally before routing to Uniswap.
+   * The novel primitive — agents settle directly when possible, use
+   * Uniswap as the liquidity backstop instead of the first hop.
+   */
+  otcAdvertise: 'swarm.otc.advertise',
+  /** Two-way confirmation of a proposed match. */
+  otcConfirm: 'swarm.otc.confirm',
 } as const;

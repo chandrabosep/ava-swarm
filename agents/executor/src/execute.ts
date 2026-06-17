@@ -21,7 +21,7 @@ import {
   type SwarmMessage,
 } from '@swarm/shared';
 
-import { getQuote, buildSwap } from './uniswap.js';
+import { quote } from './uniswap.js';
 import { submitJob, waitForJob } from './keeperhub.js';
 import { loadExecutorSession } from './sessions.js';
 
@@ -52,18 +52,16 @@ export async function execute({
       throw new Error('No active Executor session for this Safe.');
     }
 
-    // 2. Quote — confirms route + min-out before we sign anything.
+    // 2. Quote — single call. /quote returns methodParameters (Universal
+    //    Router calldata) directly, no separate /swap hop.
     log.info('quoting');
-    const quote = await getQuote({
+    const swap = await quote({
       chain: intent.chain,
       tokenIn: intent.tokenIn as `0x${string}`,
       tokenOut: intent.tokenOut as `0x${string}`,
       amountIn: intent.amountIn,
       swapper: safeAddress,
     });
-
-    // 3. Calldata
-    const swap = await buildSwap(quote);
 
     // 4. Sign. We sign the keccak256 of (to, data, value, intentId) as a
     //    placeholder UserOp digest — KeeperHub does the actual UserOp

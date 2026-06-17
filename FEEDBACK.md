@@ -22,27 +22,74 @@ agents touch Uniswap directly:
 > _Updated as we integrate. See `agents/executor/src/uniswap.ts`._
 
 - **What worked:**
-  - The `/quote` + `/swap` two-step is clean to wrap: one quote shape,
-    one swap shape. Less ad-hoc than building Universal Router calldata
-    by hand.
-  - `swapper` parameter accepting an arbitrary recipient (not just msg.sender)
-    is exactly right for Safe smart-account flows where the EOA submitting
-    a UserOp differs from the on-behalf-of account.
+  - **Single-call quote.** `/quote` returns route + prices + the
+    Universal Router `methodParameters` (calldata, value, target) in
+    one response. Wrapped in 80 lines of TS. Exactly the shape an agent
+    wants — no quote→swap round-tripping on the hot path.
+  - `swapper` parameter accepting an arbitrary recipient (not just
+    msg.sender) is exactly right for Safe smart-account flows where
+    the EOA submitting a UserOp differs from the on-behalf-of account.
+  - Smart Order Routing across v2/v3/v4 transparently — agent code
+    only needs the token pair + amount, never has to think about pool
+    topology.
 - **What didn't:**
-  - _to be filled as we hit issues_
+  - We initially built a two-call flow (`/quote` then `/swap`) before
+    realizing `/quote` already returned methodParameters. The docs
+    leave it ambiguous which version of the API is current; the video
+    walkthrough we found showed single-call, and that's what shipped
+    in production.
 - **DX friction:**
-  - The boundary between "this field is in the response root" vs "in
-    `quote` / `swap` sub-objects" required reading a sample response to
-    figure out — a more uniform shape (`{ amountIn, route, calldata }`
-    flat) would be friendlier.
+  - The shape of `methodParameters` lives nested inside `quote` in
+    some response paths and at root in others. Our client tolerates
+    both, but a uniform shape would be cleaner.
+  - Per-chain numeric ids in `tokenInChainId` / `tokenOutChainId` —
+    we'd love a string alias (`"unichain"`) since most agent code
+    speaks chain names, not chain ids.
 - **Docs gaps:**
-  - _to be filled_
+  - The Permit2 signature-based approval flow is described in the
+    Permit2 docs separately; integrating against the Trading API for
+    "swap with embedded Permit" required reading both. A combined
+    flow doc would shorten the path significantly.
 - **Bugs hit:**
-  - _to be filled_
+  - `slippageTolerance` accepts both a fraction (0.005) and a percent
+    (0.5) depending on which doc page you read. We default to percent
+    because that's what the most-recent example showed.
 - **Endpoints we wish existed:**
-  - A combined `/swap-or-quote-then-swap` that returns calldata in one
-    round-trip. Two sequential network calls per swap on a low-latency
-    agent path adds noticeable wall-time.
+  - A `POST /quote-batch` that takes an array of pairs and returns
+    quotes in one call. Our PM tick re-allocates across multiple
+    pairs simultaneously and we'd love to do them in one HTTP roundtrip
+    rather than N sequential calls.
+  - A `POST /quote/internal-match-hint` that lets a caller publish
+    "I'm about to swap X for Y" and receive back "we see N other
+    pending swaps in the same direction; expect ~M bps better than
+    quoted price if you can wait 30s." Agent OTC layers like ours
+    would consume this.
+
+## Novel primitive: agent-mediated OTC matching
+
+We built a layer on top of the Trading API that we think is the
+"primitive Uniswap hasn't seen yet" your prize copy mentioned:
+**agent-to-agent OTC matching over a peer-to-peer mesh, with Uniswap
+as the liquidity backstop.**
+
+How it works (agents/router/src/otc.ts):
+
+1. PM proposes an allocation change for user A → Router decomposes
+   into pair swaps (sell USDC, buy ETH).
+2. Before sending each swap to Executor, Router broadcasts an
+   `OtcAdvert` on the AXL mesh (Gensyn's P2P comms).
+3. Other Routers (serving other tenants) listen. If any of them have
+   the opposite swap in their own pending pool at compatible size,
+   they reply with `OtcConfirm`.
+4. Matched: both sides settle Safe-to-Safe at mid-price, no Uniswap
+   hit, no slippage, no MEV exposure.
+5. Unmatched within a 5s window: Router falls through to Uniswap and
+   the swap routes normally.
+
+The pitch: Uniswap remains the backstop liquidity; agents save the
+slippage on the volume they can match internally; the user keeps the
+benefit either way. We think this is exactly the kind of agentic
+finance primitive your team is fishing for.
 
 ## v4 SDK — running notes
 

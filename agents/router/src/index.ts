@@ -23,6 +23,12 @@ import {
 import { decompose } from './decompose.js';
 import { dispatch } from './dispatch.js';
 import { currentSlices } from './portfolio.js';
+import {
+  broadcastAdvert,
+  consumeAdverts,
+  lookForMatch,
+  settleMatch,
+} from './otc.js';
 
 /** Phase B-1: settle every intent on the user's primary chain. */
 const PRIMARY_CHAIN: SupportedChain = 'unichain';
@@ -47,6 +53,9 @@ async function main() {
       }
     }
   })();
+
+  // OTC peer advert inbox — runs continuously, attempts cross-tenant matches.
+  void consumeAdverts(ctx);
 
   // ALM rebalance inbox
   void (async () => {
@@ -87,9 +96,28 @@ async function handleAllocation(
     return;
   }
   for (const swap of swaps) {
-    // The "originIntentId" in our payload would be PM's intent row id;
-    // we don't have it on the wire in B-1 (the AllocationIntent shape
-    // doesn't carry one). Use the AXL receivedAt as a stable correlator.
+    // Try internal OTC match first. If a peer Router on the AXL mesh
+    // has an opposing intent at compatible size, settle Safe-to-Safe
+    // and skip Uniswap entirely. Falls through to Uniswap if no match
+    // surfaces within the advert TTL.
+    const peer = lookForMatch(swap, safeAddress);
+    if (peer) {
+      const advertId = await broadcastAdvert(ctx, swap, safeAddress);
+      await settleMatch(
+        ctx,
+        advertId,
+        peer,
+        safeAddress as `0x${string}`,
+      );
+      continue;
+    }
+
+    // Broadcast our intent so the next peer with an opposite finds us,
+    // then dispatch normally. Atomic-settlement contract for "matched
+    // late" advertisements is the next iteration; for now Uniswap
+    // handles unmatched volume.
+    void broadcastAdvert(ctx, swap, safeAddress);
+
     await dispatch({
       ctx,
       safeAddress,
