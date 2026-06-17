@@ -46,12 +46,34 @@ agents touch Uniswap directly:
 
 ## v4 SDK — running notes
 
+> _Updated as we integrate. See `agents/alm/src/positions.ts` and
+> `agents/alm/src/strategy.ts`._
+
 - **What worked:**
+  - `getPoolAndPositionInfo(tokenId)` returning everything we need (poolId,
+    tickLower, tickUpper, liquidity) in one call is exactly the right shape
+    for an LP-management agent — no chained reads.
+  - Position-as-NFT means `balanceOf` + `tokenOfOwnerByIndex` is the
+    standard ERC-721 dance, no v4-specific quirks for enumeration.
 - **What didn't:**
+  - `getSlot0(poolId)` exists in the helper but isn't on the canonical
+    PoolManager ABI — had to use a separate StateView contract address.
+    Easy to miss in docs.
 - **DX friction:**
+  - PoolManager addresses differ across Mainnet / Base / Unichain. We hardcoded
+    a per-chain map; an SDK helper that resolves by chainId would prevent the
+    inevitable copy-paste typo.
 - **Docs gaps:**
+  - The `tickSpacing → fee tier` mapping could be more discoverable from the
+    SDK; we ended up reading hooks code to confirm canonical values.
 - **Bugs hit:**
+  - _to be filled_
 - **Missing primitives:**
+  - A canonical "is this position in range?" helper. Every LP integration
+    re-implements the `currentTick ∈ [lower, upper]` check.
+  - A "compute optimal new range for current price + fee tier + volatility"
+    helper would let agents reuse Uniswap's own range-selection heuristic
+    rather than rolling their own.
 
 ## Suggested improvements
 
