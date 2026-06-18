@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx watch --env-file=../.env src/index.ts",
+    "start": "tsx --env-file=../.env src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@swarm/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.0.4",
     "viem": "^2.21.0",
     "permissionless": "^0.2.0"
   },
