@@ -11,6 +11,7 @@
 
 import {
   bootAgent,
+  db,
   startHeartbeat,
   startIntentPoll,
   TOPICS,
@@ -40,26 +41,59 @@ async function main() {
   const ctx = await bootAgent('router');
   const stopHeartbeat = startHeartbeat(ctx);
 
-  // PM allocation inbox
+  // PM allocation inbox — three transports racing for the same intent:
+  //   1. AXL gossip   (multi-host production path)
+  //   2. PG NOTIFY    (single-host instant path; fastest in dev)
+  //   3. DB poll      (resilience fallback, always-on)
+  // Whichever delivers first wins via claimIntent() which transitions
+  // the row pending→netted in a single SQL statement; losers no-op.
+  const claimAndHandle = async (
+    transport: 'axl' | 'pg' | 'db-poll',
+    safeAddress: string,
+    intentId: string | undefined,
+    payload: AllocationIntent,
+  ) => {
+    if (intentId) {
+      const claimed = await claimIntent(intentId);
+      if (!claimed) return; // another transport got there first
+    }
+    ctx.log.info(`allocation received via ${transport}`, {
+      safeAddress,
+      intentId,
+    });
+    try {
+      await handleAllocation(ctx, safeAddress, payload);
+    } catch (err) {
+      ctx.log.warn('allocation handler failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  // 1. AXL gossip
   void (async () => {
     for await (const msg of ctx.axl.subscribe<SwarmMessage<AllocationIntent>>(
       TOPICS.pmAllocation,
     )) {
       const env = msg.payload;
       if (!env || env.payload?.kind !== 'allocation') continue;
-      try {
-        await handleAllocation(ctx, env.safeAddress, env.payload);
-      } catch (err) {
-        ctx.log.warn('allocation handler failed', {
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
+      await claimAndHandle('axl', env.safeAddress, env.intentId, env.payload);
     }
   })();
 
-  // DB-poll fallback — fires whether or not AXL is up. Same handler as
-  // the AXL subscription path; intent-poll claims rows atomically so we
-  // can run both without double-processing.
+  // 2. PG LISTEN/NOTIFY — instant cross-process path on a single host
+  void (async () => {
+    for await (const msg of ctx.pg.subscribe<SwarmMessage<AllocationIntent>>(
+      TOPICS.pmAllocation,
+    )) {
+      const env = msg.payload;
+      if (!env || env.payload?.kind !== 'allocation') continue;
+      await claimAndHandle('pg', env.safeAddress, env.intentId, env.payload);
+    }
+  })();
+
+  // 3. DB-poll fallback — claims rows itself via intent-poll; runs even
+  //    if AXL and PG are both silent. Fires within the poll cadence.
   startIntentPoll<AllocationIntent>({
     fromAgent: 'pm',
     pendingStatus: 'pending',
@@ -69,6 +103,10 @@ async function main() {
     log: (level, msg, meta) => ctx.log[level](msg, meta),
     handle: async (row) => {
       if (row.payload?.kind !== 'allocation') return;
+      ctx.log.info('allocation received via db-poll', {
+        safeAddress: row.safeAddress,
+        intentId: row.id,
+      });
       await handleAllocation(ctx, row.safeAddress, row.payload);
     },
   });
@@ -160,6 +198,22 @@ async function handleRebalance(
     poolId: intent.poolId,
     reason: intent.reason,
   });
+}
+
+/**
+ * Atomically transition an intent row from pending → netted. Returns
+ * true if THIS caller won the claim (and therefore should process the
+ * intent), false if another transport already claimed it.
+ *
+ * The single UPDATE...WHERE status='pending' is the dedup primitive
+ * for our three-transport delivery model.
+ */
+async function claimIntent(intentId: string): Promise<boolean> {
+  const res = await db().intent.updateMany({
+    where: { id: intentId, status: 'pending' },
+    data: { status: 'netted' },
+  });
+  return res.count > 0;
 }
 
 main().catch((err: unknown) => {
