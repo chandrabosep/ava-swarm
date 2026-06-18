@@ -80,15 +80,28 @@ export class AxlClient {
     return { ok: true };
   }
 
-  async publish(opts: { topic: string; payload: unknown }): Promise<{ ok: true }> {
-    // If AXL is offline, swallow the error: the swarm degrades gracefully
-    // (Router/Executor poll the DB for new intents instead of relying on
-    // gossip). We don't want a missing peer mesh to nuke a tick.
+  async publish(opts: { topic: string; payload: unknown }): Promise<{ ok: true; delivered: number }> {
+    // Two-path delivery model:
+    //   1. AXL gossip: send envelope to every peer in topology() — this
+    //      is the production path when each agent runs on its own host
+    //      with its own AXL daemon peered across the public mesh.
+    //   2. DB poll fallback: agents claim pending intent rows
+    //      atomically via shared/intent-poll. Always on. Catches every
+    //      message even if AXL is degraded or the topology is empty.
+    //
+    // Single-host dev (one shared daemon, no remote peers) → topology
+    // returns []; AXL publish becomes a no-op and DB poll carries the
+    // intent. This is by design: no single point of failure, no special
+    // case for local dev. See agents/README.md "Transport".
     let peers: TopologyEntry[];
     try {
       peers = await this.peers();
     } catch {
-      return { ok: true };
+      return { ok: true, delivered: 0 };
+    }
+    if (peers.length === 0) {
+      // Mesh has no remote peers — the DB-poll fallback will deliver.
+      return { ok: true, delivered: 0 };
     }
     const envelope: Envelope = {
       topic: opts.topic,
@@ -97,14 +110,14 @@ export class AxlClient {
       ts: Date.now(),
     };
     const data = JSON.stringify(envelope);
-    await Promise.all(
+    const sent = await Promise.all(
       peers.map((p) =>
-        this.send({ to: p.publicKey, data }).catch(() => {
-          /* one bad peer shouldn't break the broadcast */
-        }),
+        this.send({ to: p.publicKey, data })
+          .then(() => 1)
+          .catch(() => 0 /* one bad peer shouldn't break the broadcast */),
       ),
     );
-    return { ok: true };
+    return { ok: true, delivered: sent.reduce((a, b) => a + b, 0) };
   }
 
   async *subscribe<T = unknown>(

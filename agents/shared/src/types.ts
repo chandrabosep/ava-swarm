@@ -149,5 +149,10 @@ export interface SwarmMessage<T = unknown> {
   fromAgent: AgentRole;
   safeAddress: string;
   ts: number;
+  /** ID of the persisted Intent row this message corresponds to.
+   *  Used by subscribers to atomically claim the row (pending →
+   *  netted) so AXL gossip, PG LISTEN/NOTIFY, and the DB-poll
+   *  fallback don't double-process the same intent. */
+  intentId?: string;
   payload: T;
 }

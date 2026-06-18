@@ -10,11 +10,16 @@ import { AxlClient, TOPICS } from './axl.js';
 import { env } from './env.js';
 import { createLogger, type Logger } from './log.js';
 import { serviceAddress } from './keys.js';
+import { pgGossip, type PgGossipBus } from './pg-gossip.js';
 
 export interface AgentContext {
   role: AgentRole;
   log: Logger;
   axl: AxlClient;
+  /** Postgres LISTEN/NOTIFY bus — instant cross-process gossip on a
+   *  single host. Sits alongside AXL (multi-host) and DB poll
+   *  (resilience) in the three-layer transport stack. */
+  pg: PgGossipBus;
   /** Peer id + pubkey from the local AXL daemon. */
   identity: { peerId: string; pubkey: string };
 }
@@ -69,8 +74,21 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
     },
   });
 
+  // PG gossip bus — opens a dedicated LISTEN connection lazily on first
+  // publish/subscribe. Falls back gracefully if DIRECT_URL is unset or
+  // the connection drops; DB poll always catches missed messages.
+  const pg = pgGossip();
+  pg.onLifecycle = (event, meta) => log.info(event, meta);
+  // Pre-warm the connection so the first publish/subscribe doesn't pay
+  // the connection-establishment latency on the critical path.
+  void pg
+    .publish({ topic: 'swarm.boot.ping', from: role, payload: { ts: Date.now() } })
+    .catch(() => {
+      /* boot ping is best-effort */
+    });
+
   installShutdownHandlers(log);
-  return { role, log, axl, identity };
+  return { role, log, axl, pg, identity };
 }
 
 /**
