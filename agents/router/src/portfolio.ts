@@ -1,9 +1,17 @@
-// Same Zerion-snapshot helper PM uses, narrowed to what Router needs:
+// Same portfolio helper PM uses, narrowed to what Router needs:
 // the user's current per-symbol USD holdings AND a derived USD price so
 // the Executor can convert USD notional → token amount in smallest unit
 // when calling Uniswap.
+//
+// Source: Zerion on mainnets (where it's indexed), Alchemy on testnets
+// (Zerion doesn't cover Sepolia/Base Sepolia). Toggled by USE_TESTNET.
 
-import { env } from '@swarm/shared';
+import {
+  env,
+  fetchAlchemyTokens,
+  alchemyBalanceFloat,
+  alchemyUsdPrice,
+} from '@swarm/shared';
 import type { Symbol } from './tokens.js';
 import type { CurrentSlice } from './decompose.js';
 
@@ -30,6 +38,54 @@ interface ZerionPositionsResponse {
 const ALLOWED: Symbol[] = ['ETH', 'WETH', 'WBTC', 'USDC', 'UNI'];
 
 export async function currentSlices(safe: string): Promise<CurrentSlice[]> {
+  if (env.useTestnet()) {
+    return currentSlicesAlchemy(safe);
+  }
+  return currentSlicesZerion(safe);
+}
+
+async function currentSlicesAlchemy(safe: string): Promise<CurrentSlice[]> {
+  const tokens = await fetchAlchemyTokens(safe.toLowerCase());
+  // Aggregate across networks (a user might hold WETH on multiple chains).
+  interface Acc {
+    valueUsd: number;
+    quantity: number;
+    decimals: number;
+  }
+  const map = new Map<Symbol, Acc>();
+  for (const t of tokens) {
+    if (t.error) continue;
+    const sym = (t.tokenMetadata?.symbol ?? '').toUpperCase() as Symbol;
+    // Native tokens come back without a metadata.symbol on some chains —
+    // a null tokenAddress means it's the chain's native asset, which we
+    // treat as ETH for our universe.
+    const effectiveSym: Symbol =
+      t.tokenAddress === null && !sym ? 'ETH' : sym;
+    if (!ALLOWED.includes(effectiveSym)) continue;
+    const qty = alchemyBalanceFloat(t);
+    const priceUsd = alchemyUsdPrice(t);
+    const decimals = t.tokenMetadata?.decimals ?? defaultDecimals(effectiveSym);
+    const valueUsd = qty * priceUsd;
+    const cur = map.get(effectiveSym) ?? {
+      valueUsd: 0,
+      quantity: 0,
+      decimals,
+    };
+    cur.valueUsd += valueUsd;
+    cur.quantity += qty;
+    cur.decimals = Math.max(cur.decimals, decimals);
+    map.set(effectiveSym, cur);
+  }
+  return Array.from(map.entries()).map(([symbol, acc]) => ({
+    symbol,
+    valueUsd: acc.valueUsd,
+    priceUsd:
+      acc.quantity > 0 ? acc.valueUsd / acc.quantity : fallbackPrice(symbol),
+    decimals: acc.decimals,
+  }));
+}
+
+async function currentSlicesZerion(safe: string): Promise<CurrentSlice[]> {
   const url = `${env.zerionProxyUrl()}/wallets/${safe.toLowerCase()}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Zerion ${res.status}`);
