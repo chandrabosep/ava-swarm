@@ -21,10 +21,24 @@ import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
 import { profileFor, type RiskProfile } from './profiles.js';
 
-const ALLOWED_TOKENS = ['ETH', 'WBTC', 'USDC', 'UNI'] as const;
+// Sepolia has no reliable WBTC/UNI liquidity on Uniswap, so on testnet
+// we keep PM tightly scoped to ETH ↔ USDC. Mainnet keeps the full
+// universe. Override-able with PM_ALLOWED_TOKENS=ETH,USDC,WBTC,UNI.
+const ALLOWED_TOKENS: readonly string[] = (() => {
+  const override = process.env.PM_ALLOWED_TOKENS;
+  if (override) {
+    return override
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+  }
+  return env.useTestnet()
+    ? (['ETH', 'USDC'] as const)
+    : (['ETH', 'WBTC', 'USDC', 'UNI'] as const);
+})();
 
 export interface DecideParams {
-  safeAddress: string;
+  walletAddress: string;
   snapshot: PortfolioSnapshot;
   /** Soft rebalance threshold — Router only acts on diffs > this. */
   toleranceBps: number;
@@ -39,6 +53,16 @@ function buildSystemPrompt(profile: RiskProfile): string {
   const stablePct = Math.round(cfg.stableFloor * 100);
   const maxPct = Math.round(cfg.maxToken * 100);
   const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
+  // Build the example dynamically from ALLOWED_TOKENS so the universe
+  // we describe matches the universe we accept (testnet = ETH+USDC,
+  // mainnet = full set). A static example with WBTC would steer the
+  // LLM toward proposing tokens we've banned for this run.
+  const exampleTargets = ALLOWED_TOKENS.slice(0, 3)
+    .map((sym, i) => {
+      const weight = i === 0 ? 0.6 : i === 1 ? 0.3 : 0.1;
+      return `    { "symbol": "${sym}", "weight": ${weight.toFixed(2)} }`;
+    })
+    .join(',\n');
   return `${cfg.persona}
 
 Your job is to propose a target allocation across the allowed token
@@ -48,14 +72,12 @@ matching this schema:
 {
   "rationale": "<2-3 sentence explanation>",
   "targets": [
-    { "symbol": "ETH",  "weight": 0.40 },
-    { "symbol": "USDC", "weight": 0.45 },
-    { "symbol": "WBTC", "weight": 0.15 }
+${exampleTargets}
   ]
 }
 
 Rules:
-1. Allowed symbols: ${ALLOWED_TOKENS.join(', ')}.
+1. Allowed symbols: ${ALLOWED_TOKENS.join(', ')}. Do NOT propose any other symbol.
 2. weights sum to exactly 1.0.
 3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
 4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
@@ -110,13 +132,15 @@ export async function decideAllocation(
     kind: 'allocation',
     targets,
     toleranceBps: params.toleranceBps,
+    rationale: parsed.rationale,
+    profile: params.riskProfile,
   };
 }
 
 function buildUserPrompt(params: DecideParams): string {
-  const { snapshot, safeAddress, toleranceBps, context } = params;
+  const { snapshot, walletAddress, toleranceBps, context } = params;
   const lines = [
-    `Safe address: ${safeAddress}`,
+    `Wallet address: ${walletAddress}`,
     `Total value: $${snapshot.totalValueUsd.toFixed(2)}`,
     `24h change: ${snapshot.change24hPct.toFixed(2)}% ($${snapshot.change24hUsd.toFixed(2)})`,
     `Tolerance: ${(toleranceBps / 100).toFixed(2)}% — ignore deltas smaller than this.`,

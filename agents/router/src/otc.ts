@@ -6,14 +6,14 @@
 // operators' AXL nodes) listen, look for opposite intents in their own
 // pending pools, and reply with OtcConfirm if there's a fit.
 //
-// When matched: both sides skip Uniswap and settle Safe-to-Safe at
-// mid-price. Saves slippage, gas, and MEV exposure. When unmatched:
+// When matched: both sides skip Uniswap and settle wallet-to-wallet
+// at mid-price. Saves slippage, gas, and MEV exposure. When unmatched:
 // fall through to the existing Uniswap path after a short window.
 //
 // This commit ships the matching layer + AXL gossip. The atomic
-// settlement contract (Safe-to-Safe transfer via Permit2 transferFrom
-// from each Safe in one tx, signed by the Executor session keys with
-// their per-user policies) is the next iteration.
+// settlement contract (wallet-to-wallet transfer via Permit2
+// transferFrom from each EOA in one tx, signed by the Executor
+// session keys with their per-user policies) is the next iteration.
 
 import type { Address } from 'viem';
 
@@ -53,7 +53,7 @@ export function lookForMatch(
 ): OtcAdvert | null {
   prune();
   for (const advert of peerAdverts.values()) {
-    if (advert.safeAddress.toLowerCase() === myAddress.toLowerCase()) continue;
+    if (advert.walletAddress.toLowerCase() === myAddress.toLowerCase()) continue;
     if (advert.chain !== swap.chain) continue;
     // Opposite direction: peer's tokenIn = my tokenOut, and vice versa.
     if (
@@ -72,12 +72,12 @@ export function lookForMatch(
 export async function broadcastAdvert(
   ctx: AgentContext,
   swap: PairSwap,
-  safeAddress: string,
+  walletAddress: string,
 ): Promise<string> {
   const advert: OtcAdvert = {
     advertId: newId(),
     chain: swap.chain,
-    safeAddress,
+    walletAddress,
     tokenIn: swap.tokenIn,
     tokenOut: swap.tokenOut,
     notionalUsd: swap.notionalUsd,
@@ -87,7 +87,7 @@ export async function broadcastAdvert(
 
   const msg: SwarmMessage<OtcAdvert> = {
     fromAgent: 'router',
-    safeAddress,
+    walletAddress,
     ts: Date.now(),
     payload: advert,
   };
@@ -95,7 +95,7 @@ export async function broadcastAdvert(
 
   await db().event.create({
     data: {
-      safeAddress,
+      walletAddress,
       agent: 'router',
       kind: 'otc.advertised',
       payload: { advertId: advert.advertId, swap: swap.tokenInSymbol + '->' + swap.tokenOutSymbol, notionalUsd: swap.notionalUsd },
@@ -123,13 +123,13 @@ export async function consumeAdverts(ctx: AgentContext): Promise<void> {
     const confirm: OtcConfirm = {
       advertId: advert.advertId,
       counterAdvertId: mine.advertId,
-      safeAddress: mine.safeAddress,
+      walletAddress: mine.walletAddress,
       midPrice18: '1000000000000000000', // 1.0 — placeholder; real price oracle in B-2
       ack: 'accept',
     };
     const reply: SwarmMessage<OtcConfirm> = {
       fromAgent: 'router',
-      safeAddress: mine.safeAddress,
+      walletAddress: mine.walletAddress,
       ts: Date.now(),
       payload: confirm,
     };
@@ -150,16 +150,16 @@ export async function consumeAdverts(ctx: AgentContext): Promise<void> {
 /**
  * Resolution: if `lookForMatch` returned a peer advert, this consumes
  * both sides and returns true to mean "settled internally; do NOT
- * dispatch to Uniswap." The actual onchain settlement (Safe-to-Safe
- * transfer through the Permit2 transferFrom whitelist) is the next
- * iteration; for now we record `intent.matched` and let Phase C wire
- * the contract call.
+ * dispatch to Uniswap." The actual onchain settlement (wallet-to-
+ * wallet transfer through the Permit2 transferFrom whitelist) is the
+ * next iteration; for now we record `intent.matched` and let Phase C
+ * wire the contract call.
  */
 export async function settleMatch(
   ctx: AgentContext,
   myAdvertId: string,
   peer: OtcAdvert,
-  ourSafe: Address,
+  ourWallet: Address,
 ): Promise<void> {
   const mine = myAdverts.get(myAdvertId);
   if (!mine) return;
@@ -168,13 +168,13 @@ export async function settleMatch(
 
   await db().event.create({
     data: {
-      safeAddress: ourSafe,
+      walletAddress: ourWallet,
       agent: 'router',
       kind: 'intent.matched',
       payload: {
         advertId: myAdvertId,
         peerAdvertId: peer.advertId,
-        peerSafe: peer.safeAddress,
+        peerWallet: peer.walletAddress,
         notionalUsd: mine.notionalUsd,
         savedSlippageEstimate: mine.notionalUsd * 0.0015, // ~15bps Uniswap-typical
       },
@@ -184,7 +184,7 @@ export async function settleMatch(
   ctx.log.info('OTC matched — settling internally', {
     pair: `${mine.tokenIn}->${mine.tokenOut}`,
     notionalUsd: mine.notionalUsd,
-    peerSafe: peer.safeAddress,
+    peerWallet: peer.walletAddress,
   });
 }
 

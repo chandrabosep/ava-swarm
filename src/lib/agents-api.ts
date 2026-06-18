@@ -1,15 +1,16 @@
 // Thin HTTP client for the agents backend (`agents/api`).
 //
-// After the extension grants a Smart Sessions policy onchain, we POST
-// the resulting (safeAddress, agent, sessionAddress, policyHash, validUntil)
-// here so the agents' Postgres has a row to look up next tick. Without
-// this call the swarm has no idea a new user just activated.
+// After the extension grants a delegation policy onchain (EIP-7702),
+// we POST the resulting (walletAddress, agent, sessionAddress,
+// policyHash, validUntil) here so the agents' Postgres has a row to
+// look up next tick. Without this call the swarm has no idea a new
+// user just activated.
 
 import { AGENTS_API_URL } from '@/config/swarm';
 import type { SessionAgent } from '@/types/swarm';
 
 export interface RegisterSessionInput {
-  safeAddress: string;
+  walletAddress: string;
   ownerEoa: string;
   agent: SessionAgent;
   sessionAddress: string;
@@ -34,12 +35,12 @@ export async function registerSession(input: RegisterSessionInput): Promise<void
 }
 
 export async function setRiskProfile(
-  safeAddress: string,
+  walletAddress: string,
   riskProfile: 'conservative' | 'balanced' | 'aggressive' | 'degen',
   options?: { resetCustom?: boolean },
 ): Promise<void> {
   const res = await fetch(
-    `${AGENTS_API_URL}/api/users/${safeAddress.toLowerCase()}/profile`,
+    `${AGENTS_API_URL}/api/users/${walletAddress.toLowerCase()}/profile`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -53,7 +54,7 @@ export async function setRiskProfile(
 }
 
 export async function setCustomConfig(
-  safeAddress: string,
+  walletAddress: string,
   patch: Partial<{
     stableFloor: number;
     maxToken: number;
@@ -63,7 +64,7 @@ export async function setCustomConfig(
   }>,
 ): Promise<void> {
   const res = await fetch(
-    `${AGENTS_API_URL}/api/users/${safeAddress.toLowerCase()}/config`,
+    `${AGENTS_API_URL}/api/users/${walletAddress.toLowerCase()}/config`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

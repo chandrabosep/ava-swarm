@@ -24,7 +24,7 @@ export function AgentCard({ agent }: AgentCardProps) {
   const status = useSwarmStatus();
 
   // Session granted = the agents API has a Session row for this agent on
-  // the user's current Safe. Live demo mode + real grants both flow
+  // the user's current wallet. Live demo mode + real grants both flow
   // through the same path.
   const sessionRow = status.data?.sessions.find((s) => s.agent === agent.role);
   const sessionKey = sessionRow?.sessionAddress as
@@ -33,8 +33,26 @@ export function AgentCard({ agent }: AgentCardProps) {
   const needsSession = NEEDS_SESSION.has(agent.role);
   const granted = needsSession && !!sessionKey;
 
+  // "Thinking" — the agent did something within the last 5 seconds.
+  // Drives a soft animated halo so the card visibly pulses when this
+  // agent is actively working (not just heartbeating).
+  const lastIntent = status.data?.intents?.find(
+    (i) => i.fromAgent === agent.role,
+  );
+  const ageSec = lastIntent
+    ? (Date.now() - new Date(lastIntent.createdAt).getTime()) / 1000
+    : Infinity;
+  const isThinking = ageSec < 5;
+
   return (
-    <Surface variant="raised" className="p-4 flex flex-col gap-3">
+    <Surface
+      variant="raised"
+      className={`p-4 flex flex-col gap-3 transition-all ${
+        isThinking
+          ? 'ring-2 ring-positive/40 shadow-[0_0_20px_-4px_rgba(34,197,94,0.4)]'
+          : ''
+      }`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-wider text-fg-subtle">
@@ -53,7 +71,7 @@ export function AgentCard({ agent }: AgentCardProps) {
               : undefined
           }
         >
-          {agent.status}
+          {isThinking ? 'thinking…' : agent.status}
         </Badge>
       </div>
 

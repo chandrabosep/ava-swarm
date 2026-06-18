@@ -65,10 +65,10 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
   // Sentinel User row that satisfies the AgentState FK for global
   // (non-tenant-scoped) heartbeat rows. Idempotent.
   await db().user.upsert({
-    where: { safeAddress: GLOBAL_HEARTBEAT_KEY },
+    where: { walletAddress: GLOBAL_HEARTBEAT_KEY },
     update: {},
     create: {
-      safeAddress: GLOBAL_HEARTBEAT_KEY,
+      walletAddress: GLOBAL_HEARTBEAT_KEY,
       ownerEoa: GLOBAL_HEARTBEAT_KEY,
       chains: '',
     },
@@ -91,7 +91,7 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
  * subscription.
  *
  * We use the AgentState table (one row per agent globally — null
- * safeAddress placeholder) for the latest heartbeat, since per-tenant
+ * walletAddress placeholder) for the latest heartbeat, since per-tenant
  * agent state is already tracked elsewhere. The Event table gets one row
  * per heartbeat for the activity timeline.
  */
@@ -125,15 +125,15 @@ export function startHeartbeat(
       // needing a per-tenant scan.
       await db().agentState.upsert({
         where: {
-          agent_safeAddress: {
+          agent_walletAddress: {
             agent: ctx.role,
-            safeAddress: GLOBAL_HEARTBEAT_KEY,
+            walletAddress: GLOBAL_HEARTBEAT_KEY,
           },
         },
         update: { state: { peerId: ctx.identity.peerId, users, ts } },
         create: {
           agent: ctx.role,
-          safeAddress: GLOBAL_HEARTBEAT_KEY,
+          walletAddress: GLOBAL_HEARTBEAT_KEY,
           state: { peerId: ctx.identity.peerId, users, ts },
         },
       });
@@ -152,9 +152,10 @@ export function startHeartbeat(
 }
 
 /**
- * Sentinel safeAddress used to key the per-agent global heartbeat row.
- * It's not a real Safe — the User row created on first boot satisfies
- * the FK; we delete it on shutdown if nothing else references it.
+ * Sentinel walletAddress used to key the per-agent global heartbeat
+ * row. Not a real wallet — the User row created on first boot
+ * satisfies the FK; we delete it on shutdown if nothing else
+ * references it.
  */
 export const GLOBAL_HEARTBEAT_KEY = '0x0000000000000000000000000000000000000000';
 

@@ -1,9 +1,9 @@
 // Service addresses for the agent swarm — Model B.
 //
 // Each agent runs as a backend service holding ONE fixed keypair. The
-// extension grants the user's Safe to these addresses via Smart Sessions.
-// All users grant to the same addresses — multi-tenancy lives in the
-// per-user policies stored in the Smart Sessions module, not in
+// extension grants the user's EOA delegation to these addresses via
+// EIP-7702. All users grant to the same addresses — multi-tenancy lives
+// in the per-user policies stored alongside the delegation, not in
 // per-user keypairs.
 //
 // To deploy your own swarm:

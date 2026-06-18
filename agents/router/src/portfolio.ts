@@ -5,6 +5,11 @@
 //
 // Source: Zerion on mainnets (where it's indexed), Alchemy on testnets
 // (Zerion doesn't cover Sepolia/Base Sepolia). Toggled by USE_TESTNET.
+//
+// Reads from the KH-managed wallet, not the user's EOA — same reason
+// as PM (see agents/pm/src/portfolio.ts header). Router's deltas need
+// to match what KH can actually transferFrom. Override with
+// PM_PORTFOLIO_FROM=eoa for the EIP-7702 path.
 
 import {
   env,
@@ -37,15 +42,39 @@ interface ZerionPositionsResponse {
 
 const ALLOWED: Symbol[] = ['ETH', 'WETH', 'WBTC', 'USDC', 'UNI'];
 
-export async function currentSlices(safe: string): Promise<CurrentSlice[]> {
-  if (env.useTestnet()) {
-    return currentSlicesAlchemy(safe);
-  }
-  return currentSlicesZerion(safe);
+/** Same selector PM uses — reads KH wallet by default, user EOA when
+ *  PM_PORTFOLIO_FROM=eoa. Keeps Router's view of "current holdings"
+ *  aligned with what Executor can actually pull from. */
+function effectiveWallet(userEoa: string): string {
+  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'kh').toLowerCase();
+  if (mode === 'eoa') return userEoa;
+  return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
 }
 
-async function currentSlicesAlchemy(safe: string): Promise<CurrentSlice[]> {
-  const tokens = await fetchAlchemyTokens(safe.toLowerCase());
+export async function currentSlices(wallet: string): Promise<CurrentSlice[]> {
+  const target = effectiveWallet(wallet);
+  if (env.useTestnet()) {
+    return currentSlicesAlchemy(target);
+  }
+  return currentSlicesZerion(target);
+}
+
+/** Map raw symbol → canonical bucket. WETH collapses into ETH because
+ *  PM only proposes "ETH" targets — keeping them separate makes Router
+ *  emit phantom WETH→USDC swaps for any orphan WETH balance, which KH
+ *  can rarely fulfill. They're economically equivalent (1:1 wrap), so
+ *  treat them as one slice. Same for any future canonical merges. */
+function canonicalSymbol(sym: string): Symbol | null {
+  const upper = sym.toUpperCase();
+  if (upper === 'WETH') return 'ETH';
+  if ((['ETH', 'WBTC', 'USDC', 'UNI'] as const).includes(upper as Symbol)) {
+    return upper as Symbol;
+  }
+  return null;
+}
+
+async function currentSlicesAlchemy(wallet: string): Promise<CurrentSlice[]> {
+  const tokens = await fetchAlchemyTokens(wallet.toLowerCase());
   // Aggregate across networks (a user might hold WETH on multiple chains).
   interface Acc {
     valueUsd: number;
@@ -55,13 +84,14 @@ async function currentSlicesAlchemy(safe: string): Promise<CurrentSlice[]> {
   const map = new Map<Symbol, Acc>();
   for (const t of tokens) {
     if (t.error) continue;
-    const sym = (t.tokenMetadata?.symbol ?? '').toUpperCase() as Symbol;
+    const rawSym = t.tokenMetadata?.symbol ?? '';
     // Native tokens come back without a metadata.symbol on some chains —
     // a null tokenAddress means it's the chain's native asset, which we
     // treat as ETH for our universe.
-    const effectiveSym: Symbol =
-      t.tokenAddress === null && !sym ? 'ETH' : sym;
-    if (!ALLOWED.includes(effectiveSym)) continue;
+    const effectiveRaw =
+      t.tokenAddress === null && !rawSym ? 'ETH' : rawSym;
+    const effectiveSym = canonicalSymbol(effectiveRaw);
+    if (!effectiveSym) continue;
     const qty = alchemyBalanceFloat(t);
     const priceUsd = alchemyUsdPrice(t);
     const decimals = t.tokenMetadata?.decimals ?? defaultDecimals(effectiveSym);
@@ -85,8 +115,8 @@ async function currentSlicesAlchemy(safe: string): Promise<CurrentSlice[]> {
   }));
 }
 
-async function currentSlicesZerion(safe: string): Promise<CurrentSlice[]> {
-  const url = `${env.zerionProxyUrl()}/wallets/${safe.toLowerCase()}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`;
+async function currentSlicesZerion(wallet: string): Promise<CurrentSlice[]> {
+  const url = `${env.zerionProxyUrl()}/wallets/${wallet.toLowerCase()}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Zerion ${res.status}`);
   const json = (await res.json()) as ZerionPositionsResponse;
@@ -102,8 +132,8 @@ async function currentSlicesZerion(safe: string): Promise<CurrentSlice[]> {
   }
   const map = new Map<Symbol, Acc>();
   for (const p of json.data) {
-    const sym = p.attributes.fungible_info.symbol as Symbol;
-    if (!ALLOWED.includes(sym)) continue;
+    const sym = canonicalSymbol(p.attributes.fungible_info.symbol);
+    if (!sym) continue;
     const value = p.attributes.value ?? 0;
     const qty = parseFloat(p.attributes.quantity?.numeric ?? '0') || 0;
     const dec =

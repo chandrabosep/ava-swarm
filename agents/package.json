@@ -2,7 +2,7 @@
   "name": "defi-swarm-agents",
   "private": true,
   "version": "0.1.0",
-  "description": "Backend agent swarm — multi-tenant services that act on user Safes via session keys.",
+  "description": "Backend agent swarm — multi-tenant services that act on user EOAs via EIP-7702 delegation + session keys.",
   "workspaces": [
     "shared",
     "api",

@@ -45,7 +45,7 @@ export function SmartAccountCard() {
         <Surface className="p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <Header subtitle="One signature delegates scoped authority to the four agents. Funds stay in your EOA — no Safe deploy, no funding, no migration. Powered by EIP-7702." />
+              <Header subtitle="One signature delegates scoped authority to the four agents. Funds stay in your EOA — no smart-contract deploy, no funding, no migration. Powered by EIP-7702." />
               <div className="mt-3 text-xs text-fg-subtle">
                 Account address:{' '}
                 <span className="font-mono text-fg-muted">

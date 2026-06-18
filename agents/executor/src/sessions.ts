@@ -26,11 +26,11 @@ export interface SessionContext {
  * (defensive — would only happen if env-rotated and DB stale).
  */
 export async function loadExecutorSession(
-  safeAddress: string,
+  walletAddress: string,
 ): Promise<SessionContext | null> {
   const session = await db().session.findUnique({
     where: {
-      safeAddress_agent: { safeAddress, agent: 'executor' },
+      walletAddress_agent: { walletAddress, agent: 'executor' },
     },
   });
   if (!session) return null;

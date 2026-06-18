@@ -1,8 +1,8 @@
-// Read a Safe's Uniswap v4 LP positions from the canonical PositionManager.
+// Read a wallet's Uniswap v4 LP positions from the canonical PositionManager.
 //
 // V4 represents positions as ERC-721 NFTs owned by the LP. We:
-//   1. balanceOf(safe) → how many positions the Safe holds
-//   2. tokenOfOwnerByIndex(safe, i) → tokenId of each
+//   1. balanceOf(wallet) → how many positions the wallet holds
+//   2. tokenOfOwnerByIndex(wallet, i) → tokenId of each
 //   3. getPositionInfo(tokenId) → poolKey + tick range + liquidity
 //
 // The decoded shape is what strategy.ts consumes. We keep poolKey opaque
@@ -53,7 +53,7 @@ export function clientFor(chain: SupportedChain): PublicClient {
 }
 
 export async function readPositions(
-  safeAddress: Address,
+  walletAddress: Address,
   chain: SupportedChain,
 ): Promise<RawPosition[]> {
   const client = clientFor(chain);
@@ -69,7 +69,7 @@ export async function readPositions(
     address: pm,
     abi: POSITION_MANAGER_ABI,
     functionName: 'balanceOf',
-    args: [safeAddress],
+    args: [walletAddress],
   });
 
   if (count === 0n) return [];
@@ -81,7 +81,7 @@ export async function readPositions(
         address: pm,
         abi: POSITION_MANAGER_ABI,
         functionName: 'tokenOfOwnerByIndex',
-        args: [safeAddress, BigInt(i)],
+        args: [walletAddress, BigInt(i)],
       }),
     ),
   );

@@ -29,6 +29,14 @@ export interface AllocationIntent {
   }>;
   /** Optional max-deviation; below this, Router skips action. */
   toleranceBps?: number;
+  /** Free-text reasoning the LLM produced alongside the targets.
+   *  Surfaced in the dashboard so users can see *why* the swarm is
+   *  rebalancing, not just *that* it is. */
+  rationale?: string;
+  /** Risk profile name in effect for this allocation (conservative,
+   *  balanced, aggressive, degen). Lets the UI render a per-decision
+   *  context badge. */
+  profile?: string;
 }
 
 /**
@@ -112,16 +120,16 @@ export type EventKind =
  *
  * Other Routers (serving other tenants) listen, look for opposite intents
  * in their own pending pool, propose a match. If both sides confirm, the
- * swap settles internally instead of hitting Uniswap.
+ * swap settles wallet-to-wallet instead of hitting Uniswap.
  */
 export interface OtcAdvert {
   /** Stable id for handshake correlation. */
   advertId: string;
   /** Chain we want to settle on. */
   chain: SupportedChain;
-  /** Which Safe is offering this side. */
-  safeAddress: string;
-  /** Token being sold by this Safe. */
+  /** Which wallet is offering this side. */
+  walletAddress: string;
+  /** Token being sold by this wallet. */
   tokenIn: string;
   /** Token wanted in return. */
   tokenOut: string;
@@ -137,8 +145,8 @@ export interface OtcConfirm {
   advertId: string;
   /** Our own advert id, so the original poster can match it back. */
   counterAdvertId: string;
-  /** Confirming side's Safe address. */
-  safeAddress: string;
+  /** Confirming side's wallet address. */
+  walletAddress: string;
   /** Agreed mid-price as a 1e18 fixed-point ratio (tokenOut per tokenIn). */
   midPrice18: string;
   ack: 'accept' | 'reject';
@@ -152,7 +160,7 @@ export interface OtcConfirm {
  */
 export interface SwarmMessage<T = unknown> {
   fromAgent: AgentRole;
-  safeAddress: string;
+  walletAddress: string;
   ts: number;
   /** ID of the persisted Intent row this message corresponds to.
    *  Used by subscribers to atomically claim the row (pending →

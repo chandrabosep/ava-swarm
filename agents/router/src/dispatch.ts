@@ -5,24 +5,73 @@
 
 import {
   db,
+  env,
   TOPICS,
   type AgentContext,
   type RoutedIntent,
+  type SupportedChain,
   type SwarmMessage,
 } from '@swarm/shared';
 
 import type { PairSwap } from './decompose.js';
+import { TOKENS } from './tokens.js';
+
+const TESTNET_CHAINS: SupportedChain[] = ['sepolia', 'base-sepolia'];
+
+/** Build the set of valid token addresses for a given chain. Pseudo-ETH
+ *  (0x000…000) is always valid. Anything else must appear in TOKENS for
+ *  that chain. Catches the "sepolia chain + mainnet token address"
+ *  inconsistency seen in stale intents. */
+function isValidTokenForChain(addr: string, chain: SupportedChain): boolean {
+  const lower = addr.toLowerCase();
+  if (lower === '0x0000000000000000000000000000000000000000') return true;
+  const chainTokens = TOKENS[chain];
+  if (!chainTokens) return false;
+  return Object.values(chainTokens).some(
+    (t) => t.toLowerCase() === lower,
+  );
+}
 
 export interface DispatchParams {
   ctx: AgentContext;
-  safeAddress: string;
+  walletAddress: string;
   /** Origin intent id this routed swap traces back to. */
   originIntentId: string;
   swap: PairSwap;
 }
 
 export async function dispatch(params: DispatchParams): Promise<void> {
-  const { ctx, safeAddress, originIntentId, swap } = params;
+  const { ctx, walletAddress, originIntentId, swap } = params;
+
+  // Belt-and-braces guard: if anything upstream tries to dispatch a
+  // mainnet swap while USE_TESTNET=true (stale cache, concurrent
+  // process holding old code, race during env reload, etc), refuse
+  // and log loudly. Trumps any PRIMARY_CHAIN override.
+  if (env.useTestnet() && !TESTNET_CHAINS.includes(swap.chain)) {
+    ctx.log.error('blocked mainnet dispatch under USE_TESTNET', {
+      chain: swap.chain,
+      pair: `${swap.tokenInSymbol}->${swap.tokenOutSymbol}`,
+      notionalUsd: swap.notionalUsd,
+    });
+    return;
+  }
+
+  // Address-vs-chain consistency check: refuse to dispatch if either
+  // tokenIn or tokenOut isn't a known token on the swap's chain. This
+  // catches the case where stale code (or a half-migrated intent)
+  // produces a sepolia-labeled swap with mainnet USDC addresses.
+  if (
+    !isValidTokenForChain(swap.tokenIn, swap.chain) ||
+    !isValidTokenForChain(swap.tokenOut, swap.chain)
+  ) {
+    ctx.log.error('blocked dispatch — token address does not match chain', {
+      chain: swap.chain,
+      tokenIn: swap.tokenIn,
+      tokenOut: swap.tokenOut,
+      pair: `${swap.tokenInSymbol}->${swap.tokenOutSymbol}`,
+    });
+    return;
+  }
 
   // Cap notional: PM sizes proposals against the user's EOA portfolio,
   // but Executor swaps from the KH-managed wallet which is typically
@@ -57,7 +106,7 @@ export async function dispatch(params: DispatchParams): Promise<void> {
 
   const row = await db().intent.create({
     data: {
-      safeAddress,
+      walletAddress,
       fromAgent: 'router',
       payload: intent as unknown as object,
       status: 'routed',
@@ -66,7 +115,7 @@ export async function dispatch(params: DispatchParams): Promise<void> {
 
   await db().event.create({
     data: {
-      safeAddress,
+      walletAddress,
       agent: 'router',
       kind: 'intent.routed',
       payload: {
@@ -80,13 +129,13 @@ export async function dispatch(params: DispatchParams): Promise<void> {
 
   const msg: SwarmMessage<RoutedIntent> = {
     fromAgent: 'router',
-    safeAddress,
+    walletAddress,
     ts: Date.now(),
     payload: intent,
   };
   await ctx.axl.publish({ topic: TOPICS.routerRouted, payload: msg });
   ctx.log.info('routed', {
-    safeAddress,
+    walletAddress,
     pair: `${swap.tokenInSymbol}->${swap.tokenOutSymbol}`,
     notionalUsd: swap.notionalUsd,
     intentId: row.id,

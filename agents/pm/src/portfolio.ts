@@ -1,8 +1,17 @@
-// Pull portfolio context for a Safe.
+// Pull portfolio context for a wallet.
 //
 // Mainnet: Zerion proxy (same Cloudflare Worker the extension uses).
 // Testnet: Alchemy Portfolio API (Zerion doesn't index Sepolia/etc).
 // Toggled by USE_TESTNET in the env.
+//
+// CRITICAL: when KEEPERHUB_WALLET_ADDRESS is set, we read the KH
+// wallet's positions instead of the user's EOA. This is because under
+// the current Model B architecture KH executes swaps from its own
+// keypair — if PM proposes "sell WBTC" based on the user's EOA holding
+// WBTC, but KH's wallet has zero WBTC, the swap can never succeed.
+// Reading from the KH wallet keeps PM's proposals strictly within
+// what's actually swappable. The user funds the KH wallet once; PM
+// rebalances *that* portfolio.
 //
 // Returns a compact Snapshot the LLM prompt can fit into a few hundred
 // tokens. 24h change is filled from Zerion when available; on testnet
@@ -14,6 +23,16 @@ import {
   alchemyBalanceFloat,
   alchemyUsdPrice,
 } from '@swarm/shared';
+
+/** Resolve which wallet PM should read positions from. Defaults to the
+ *  KH-managed wallet (the one that actually executes swaps). Override
+ *  with PM_PORTFOLIO_FROM=eoa to read the user's EOA instead — useful
+ *  during the EIP-7702 cutover when KH executes from the user's EOA. */
+function effectiveWallet(userEoa: string): string {
+  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'kh').toLowerCase();
+  if (mode === 'eoa') return userEoa;
+  return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
+}
 
 export interface PositionSlice {
   symbol: string;
@@ -54,15 +73,16 @@ interface ZerionPositionsResponse {
 
 const TOP_N_POSITIONS = 10;
 
-export async function snapshot(safe: string): Promise<PortfolioSnapshot> {
+export async function snapshot(wallet: string): Promise<PortfolioSnapshot> {
+  const target = effectiveWallet(wallet);
   if (env.useTestnet()) {
-    return snapshotAlchemy(safe);
+    return snapshotAlchemy(target);
   }
-  return snapshotZerion(safe);
+  return snapshotZerion(target);
 }
 
-async function snapshotAlchemy(safe: string): Promise<PortfolioSnapshot> {
-  const tokens = await fetchAlchemyTokens(safe.toLowerCase());
+async function snapshotAlchemy(wallet: string): Promise<PortfolioSnapshot> {
+  const tokens = await fetchAlchemyTokens(wallet.toLowerCase());
   // Roll positions up by symbol+network so the LLM gets one row per
   // distinct holding (mirrors what Zerion's positions endpoint does).
   const rows: PositionSlice[] = [];
@@ -96,15 +116,15 @@ async function snapshotAlchemy(safe: string): Promise<PortfolioSnapshot> {
   };
 }
 
-async function snapshotZerion(safe: string): Promise<PortfolioSnapshot> {
+async function snapshotZerion(wallet: string): Promise<PortfolioSnapshot> {
   const base = env.zerionProxyUrl();
-  const safeLc = safe.toLowerCase();
+  const walletLc = wallet.toLowerCase();
   const [pf, pos] = await Promise.all([
     fetchJson<ZerionPortfolioResponse>(
-      `${base}/wallets/${safeLc}/portfolio?currency=usd`,
+      `${base}/wallets/${walletLc}/portfolio?currency=usd`,
     ),
     fetchJson<ZerionPositionsResponse>(
-      `${base}/wallets/${safeLc}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`,
+      `${base}/wallets/${walletLc}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`,
     ),
   ]);
 

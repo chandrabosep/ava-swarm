@@ -1,14 +1,14 @@
 // Agent service keys.
 //
 // Model B: each agent has ONE fixed keypair, loaded from env at boot.
-// Every user grants their Safe's Smart Sessions policy to the agent's
-// public address. The agent uses that single keypair to sign UserOps
-// for any user.
+// Every user grants their EOA delegation to the agent's public address
+// (EIP-7702). The agent uses that single keypair to sign UserOps for
+// any user.
 //
 // Compromise blast radius is bounded by the per-user policy enforced
-// onchain by the Smart Sessions module — even with the agent privkey,
-// an attacker can only do what the policy allows for each user (cap
-// per-tx, cap per-day, whitelist of contracts).
+// onchain by the delegation — even with the agent privkey, an attacker
+// can only do what the policy allows for each user (cap per-tx, cap
+// per-day, whitelist of contracts).
 //
 // Service pubkeys are also exported as constants in src/constants.ts
 // so the extension can hardcode them in its grant flow.

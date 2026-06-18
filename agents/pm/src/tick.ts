@@ -17,7 +17,15 @@ import {
 import { snapshot } from './portfolio.js';
 import { decideAllocation } from './decide.js';
 
-const TICK_INTERVAL_MS = 5 * 60_000;
+// Outer loop fires every 30s. The per-user gate (profile.cadenceMinutes)
+// inside tickUser() is what actually decides whether the LLM gets called.
+// This needs to be ≤ the smallest profile cadence (degen = 1min) so we
+// don't miss our chance to tick on time. 30s gives ~30s of jitter on
+// when a tick fires after it's "due", which is fine.
+//
+// Override with PM_TICK_INTERVAL_SEC env if you want a different floor.
+const TICK_INTERVAL_MS =
+  (parseFloat(process.env.PM_TICK_INTERVAL_SEC ?? '30') || 30) * 1_000;
 const DEFAULT_TOLERANCE_BPS = 300; // 3% — below this, Router noops.
 
 export function startTick(ctx: AgentContext): () => void {
@@ -45,15 +53,15 @@ export function startTick(ctx: AgentContext): () => void {
 async function tickAll(ctx: AgentContext): Promise<void> {
   const sessions = await db().session.findMany({
     where: { agent: 'executor', validUntil: { gt: new Date() } },
-    select: { safeAddress: true },
+    select: { walletAddress: true },
   });
 
-  for (const { safeAddress } of sessions) {
+  for (const { walletAddress } of sessions) {
     try {
-      await tickUser(ctx, safeAddress);
+      await tickUser(ctx, walletAddress);
     } catch (err) {
       ctx.log.warn('user tick failed', {
-        safeAddress,
+        walletAddress,
         err: err instanceof Error ? err.message : String(err),
       });
     }
@@ -62,12 +70,12 @@ async function tickAll(ctx: AgentContext): Promise<void> {
 
 async function tickUser(
   ctx: AgentContext,
-  safeAddress: string,
+  walletAddress: string,
 ): Promise<void> {
   // Read user's risk profile + per-knob overrides to derive the
   // effective config. PM uses the merged values for prompt/tolerance/
   // cadence on every tick.
-  const user = (await db().user.findUnique({ where: { safeAddress } })) as
+  const user = (await db().user.findUnique({ where: { walletAddress } })) as
     | { riskProfile?: string; customConfig?: Record<string, unknown> | null }
     | null;
   const { resolveConfig } = await import('./profiles.js');
@@ -78,7 +86,7 @@ async function tickUser(
 
   // Cadence gate: skip if PM ticked for this user too recently.
   const lastTick = await db().agentState.findUnique({
-    where: { agent_safeAddress: { agent: 'pm', safeAddress } },
+    where: { agent_walletAddress: { agent: 'pm', walletAddress } },
   });
   const lastMs =
     (lastTick?.state as { lastTick?: number } | null)?.lastTick ?? 0;
@@ -87,20 +95,20 @@ async function tickUser(
     return; // not due yet for this profile
   }
 
-  ctx.log.info('ticking user', { safeAddress, profile: profileName });
-  const pf = await snapshot(safeAddress);
+  ctx.log.info('ticking user', { walletAddress, profile: profileName });
+  const pf = await snapshot(walletAddress);
   ctx.log.info('portfolio snapshot', {
-    safeAddress,
+    walletAddress,
     totalValueUsd: pf.totalValueUsd,
     positions: pf.positions.length,
   });
   if (pf.totalValueUsd <= 0) {
-    ctx.log.info('skipping — empty portfolio', { safeAddress });
+    ctx.log.info('skipping — empty portfolio', { walletAddress });
     return;
   }
 
   const intent = await decideAllocation({
-    safeAddress,
+    walletAddress,
     snapshot: pf,
     toleranceBps: profile.toleranceBps,
     riskProfile: profileName,
@@ -109,7 +117,7 @@ async function tickUser(
   // Persist for audit, then broadcast for Router.
   const row = await db().intent.create({
     data: {
-      safeAddress,
+      walletAddress,
       fromAgent: 'pm',
       payload: intent as unknown as object,
       status: 'pending',
@@ -117,27 +125,27 @@ async function tickUser(
   });
   await db().event.create({
     data: {
-      safeAddress,
+      walletAddress,
       agent: 'pm',
       kind: 'intent.created',
       payload: { intentId: row.id, targets: intent.targets },
     },
   });
   await db().agentState.upsert({
-    where: { agent_safeAddress: { agent: 'pm', safeAddress } },
+    where: { agent_walletAddress: { agent: 'pm', walletAddress } },
     update: {
       state: { lastTick: Date.now(), lastTargets: intent.targets },
     },
     create: {
       agent: 'pm',
-      safeAddress,
+      walletAddress,
       state: { lastTick: Date.now(), lastTargets: intent.targets },
     },
   });
 
   const msg: SwarmMessage<AllocationIntent> = {
     fromAgent: 'pm',
-    safeAddress,
+    walletAddress,
     ts: Date.now(),
     intentId: row.id,
     payload: intent,
@@ -154,7 +162,7 @@ async function tickUser(
     }),
   ]);
   ctx.log.info('allocation proposed', {
-    safeAddress,
+    walletAddress,
     targets: intent.targets,
     axlDelivered: axlPub.delivered,
     transport:

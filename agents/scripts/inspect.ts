@@ -22,9 +22,9 @@ async function main() {
 
   const sessions = await db.session.findMany({
     where: { validUntil: { gt: now } },
-    orderBy: [{ safeAddress: 'asc' }, { agent: 'asc' }],
+    orderBy: [{ walletAddress: 'asc' }, { agent: 'asc' }],
     select: {
-      safeAddress: true,
+      walletAddress: true,
       agent: true,
       sessionAddress: true,
       validUntil: true,
@@ -35,7 +35,7 @@ async function main() {
   else
     console.table(
       sessions.map((s) => ({
-        safe: s.safeAddress.slice(0, 10) + '…' + s.safeAddress.slice(-4),
+        wallet: s.walletAddress.slice(0, 10) + '…' + s.walletAddress.slice(-4),
         agent: s.agent,
         session: s.sessionAddress.slice(0, 10) + '…',
         expiresInH: ((s.validUntil.getTime() - now.getTime()) / 3.6e6).toFixed(1),
@@ -44,7 +44,7 @@ async function main() {
 
   const users = await db.user.findMany({
     select: {
-      safeAddress: true,
+      walletAddress: true,
       riskProfile: true,
       chains: true,
       customConfig: true,
@@ -53,7 +53,7 @@ async function main() {
   console.log('\n=== Users ===');
   console.table(
     users.map((u) => ({
-      safe: u.safeAddress.slice(0, 10) + '…' + u.safeAddress.slice(-4),
+      wallet: u.walletAddress.slice(0, 10) + '…' + u.walletAddress.slice(-4),
       profile: u.riskProfile,
       chains: u.chains,
       hasCustom: !!u.customConfig,
@@ -72,10 +72,10 @@ async function main() {
       const ageSec = (Date.now() - s.updatedAt.getTime()) / 1000;
       return {
         agent: s.agent,
-        safe:
-          s.safeAddress === '0x0000000000000000000000000000000000000000'
+        wallet:
+          s.walletAddress === '0x0000000000000000000000000000000000000000'
             ? '(global)'
-            : s.safeAddress.slice(0, 10) + '…' + s.safeAddress.slice(-4),
+            : s.walletAddress.slice(0, 10) + '…' + s.walletAddress.slice(-4),
         keys: Object.keys(st).join(','),
         lastTick: lastTick
           ? new Date(lastTick).toISOString().replace('T', ' ').slice(5, 19)
@@ -118,7 +118,7 @@ async function main() {
       id: true,
       fromAgent: true,
       status: true,
-      safeAddress: true,
+      walletAddress: true,
       createdAt: true,
       payload: true,
     },

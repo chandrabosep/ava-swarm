@@ -6,7 +6,7 @@
 //   aggressive    — growth tilt, low stables, 5-min cadence
 //   degen         — no floor, max momentum, 1-min cadence
 //
-// Update lands in the agents DB via PUT /api/users/:safe/profile and
+// Update lands in the agents DB via PUT /api/users/:wallet/profile and
 // the next PM tick reads it.
 
 import { useState } from 'react';

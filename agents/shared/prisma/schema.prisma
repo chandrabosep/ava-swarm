@@ -1,7 +1,10 @@
 // Multi-tenant agent state.
 //
-// Primary key everywhere is the user's deterministic Safe address — it's
-// the same string across chains so we don't have to scope by (chain, addr).
+// Primary key everywhere is the user's EOA wallet address — under
+// EIP-7702 / Calibur-style delegation the EOA *is* the account, so the
+// same string identifies the user across chains. The DB column is
+// historically named `safe_address` (kept via @map for zero-migration
+// compatibility); the application-level field is `walletAddress`.
 // Per-chain runtime state goes in AgentState.state JSON when needed.
 
 generator client {
@@ -32,20 +35,20 @@ enum IntentStatus {
 }
 
 model User {
-  safeAddress String   @id @map("safe_address")
-  ownerEoa    String   @map("owner_eoa")
-  /// Comma-separated list of chains where the Safe is deployed + active.
-  chains      String   @default("")
+  walletAddress String   @id @map("safe_address")
+  ownerEoa      String   @map("owner_eoa")
+  /// Comma-separated list of chains where the wallet is active.
+  chains        String   @default("")
   /// User-tunable risk profile. PM reads this every tick to pick its
   /// system prompt + tolerance + cadence. One of:
   /// 'conservative' | 'balanced' | 'aggressive' | 'degen'.
-  riskProfile String   @default("balanced") @map("risk_profile")
+  riskProfile   String   @default("balanced") @map("risk_profile")
   /// Optional per-knob overrides on top of the profile preset. Any key
   /// from ProfileConfig can be customized: stableFloor, maxToken,
   /// maxShiftPerTick, toleranceBps, cadenceMinutes. PM merges this on
   /// top of the profile defaults each tick.
-  customConfig Json?   @map("custom_config")
-  createdAt   DateTime @default(now()) @map("created_at")
+  customConfig  Json?    @map("custom_config")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   sessions    Session[]
   intents     Intent[]
@@ -57,10 +60,10 @@ model User {
 
 model Session {
   id             String    @id @default(uuid())
-  safeAddress    String    @map("safe_address")
+  walletAddress  String    @map("safe_address")
   agent          AgentRole
   /// Public address of THIS agent's service keypair, mirrored from
-  /// the onchain Smart Sessions grant. Same value across all users for
+  /// the onchain delegation grant. Same value across all users for
   /// a given agent — see Model B in agents/README.md.
   sessionAddress String    @map("session_address")
   /// Stable hash of the policy granted onchain — for change detection.
@@ -68,56 +71,56 @@ model Session {
   grantedAt      DateTime  @default(now()) @map("granted_at")
   validUntil     DateTime  @map("valid_until")
 
-  user           User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user           User      @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@unique([safeAddress, agent])
+  @@unique([walletAddress, agent], map: "sessions_safe_address_agent_key")
   @@index([agent, validUntil])
   @@map("sessions")
 }
 
 model Intent {
-  id          String       @id @default(uuid())
-  safeAddress String       @map("safe_address")
-  fromAgent   AgentRole    @map("from_agent")
+  id            String       @id @default(uuid())
+  walletAddress String       @map("safe_address")
+  fromAgent     AgentRole    @map("from_agent")
   /// Free-form per-intent payload. Schema enforced in TS, not SQL.
-  payload     Json
-  status      IntentStatus @default(pending)
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @updatedAt @map("updated_at")
+  payload       Json
+  status        IntentStatus @default(pending)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  user        User         @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user          User         @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@index([safeAddress, status])
+  @@index([walletAddress, status], map: "intents_safe_address_status_idx")
   @@index([status, createdAt])
   @@map("intents")
 }
 
 model Event {
-  id          String     @id @default(uuid())
-  safeAddress String     @map("safe_address")
-  agent       AgentRole?
+  id            String     @id @default(uuid())
+  walletAddress String     @map("safe_address")
+  agent         AgentRole?
   /// Short event kind tag, e.g. "session.granted", "intent.executed", "alm.tick".
-  kind        String
-  payload     Json?
-  createdAt   DateTime   @default(now()) @map("created_at")
+  kind          String
+  payload       Json?
+  createdAt     DateTime   @default(now()) @map("created_at")
 
-  user        User       @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user          User       @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@index([safeAddress, createdAt])
+  @@index([walletAddress, createdAt], map: "events_safe_address_created_at_idx")
   @@index([kind, createdAt])
   @@map("events")
 }
 
 model AgentState {
-  agent       AgentRole
-  safeAddress String    @map("safe_address")
+  agent         AgentRole
+  walletAddress String    @map("safe_address")
   /// Per-tenant runtime state — last-tick timestamp, cached LP positions,
   /// allocation snapshot, whatever each agent needs.
-  state       Json
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  state         Json
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  user        User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user          User      @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@id([agent, safeAddress])
+  @@id([agent, walletAddress])
   @@map("agent_state")
 }
