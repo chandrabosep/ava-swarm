@@ -38,6 +38,20 @@ export const TOKENS: Record<SupportedChain, ChainTokens> = {
     USDC: '0x078D782b760474a361dDA0AF3839290b0EF57AD6',
     UNI: '0x8f187AA05619a017077f5308904739877ce9eA21',
   },
+  // Sepolia — official Uniswap-deployed tokens. WBTC has thin/zero
+  // liquidity on Sepolia; ETH↔USDC is the only reliable pair.
+  sepolia: {
+    WETH: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+    WBTC: '0x29f2D40B0605204364af54EC677bD022dA425d03',
+    USDC: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+    UNI: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984',
+  },
+  'base-sepolia': {
+    WETH: '0x4200000000000000000000000000000000000006',
+    WBTC: '0x0555E30da8f98308EdB960aa94C0Db47230d2B9c', // placeholder
+    USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    UNI: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', // placeholder
+  },
 };
 
 export function resolve(

@@ -4,7 +4,12 @@
 
 import type { AgentRole } from './db.js';
 
-export type SupportedChain = 'unichain' | 'base' | 'mainnet';
+export type SupportedChain =
+  | 'unichain'
+  | 'base'
+  | 'mainnet'
+  | 'sepolia'
+  | 'base-sepolia';
 
 // --- Intent payload shapes -------------------------------------------------
 
