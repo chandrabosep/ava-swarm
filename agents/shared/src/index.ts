@@ -5,6 +5,7 @@ export * from './log.js';
 export * from './db.js';
 export * from './crypto.js';
 export * from './axl.js';
+export * from './mesh.js';
 export * from './chain.js';
 export * from './types.js';
 export * from './boot.js';

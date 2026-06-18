@@ -6,16 +6,17 @@
 // here so individual agents stay focused on their actual work.
 
 import { db, disconnectDb, type AgentRole } from './db.js';
-import { AxlClient, TOPICS } from './axl.js';
-import { env } from './env.js';
+import { TOPICS } from './axl.js';
+import { PgMesh } from './mesh.js';
 import { createLogger, type Logger } from './log.js';
 import { serviceAddress } from './keys.js';
 
 export interface AgentContext {
   role: AgentRole;
   log: Logger;
-  axl: AxlClient;
-  /** Peer id + pubkey from the local AXL daemon. */
+  /** Inter-agent mesh — Postgres LISTEN/NOTIFY-backed pub/sub. */
+  axl: PgMesh;
+  /** Peer id + pubkey for this agent process. */
   identity: { peerId: string; pubkey: string };
 }
 
@@ -34,14 +35,16 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
     });
   }
 
-  // AXL — non-fatal if down; agent operates in degraded mode.
-  const axl = new AxlClient(env.axlEndpoint(role));
-  let identity = { peerId: 'offline', pubkey: '0x' };
+  // Mesh — Postgres LISTEN/NOTIFY-backed pub/sub. Non-fatal if pg is
+  // down; agent operates in degraded mode and the subscribe loops will
+  // retry on reconnect.
+  const axl = new PgMesh(role);
+  let identity = { peerId: axl.peerId, pubkey: '0x' };
   try {
     identity = await axl.identity();
-    log.info('axl up', { peerId: identity.peerId });
+    log.info('mesh up', { peerId: identity.peerId });
   } catch (err) {
-    log.warn('axl down — running without inter-agent comms', {
+    log.warn('mesh down — running without inter-agent comms', {
       err: err instanceof Error ? err.message : String(err),
     });
   }
