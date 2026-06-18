@@ -38,7 +38,7 @@ export interface PollOptions<T> {
   /** Handler — called once per claimed row. */
   handle: (row: {
     id: string;
-    safeAddress: string;
+    walletAddress: string;
     payload: T;
   }) => Promise<void>;
   /** Logger. */
@@ -82,12 +82,19 @@ export function startIntentPoll<T>(opts: PollOptions<T>): () => void {
         try {
           await opts.handle({
             id: row.id,
-            safeAddress: row.safeAddress,
+            walletAddress: row.walletAddress,
             payload: row.payload as unknown as T,
           });
           if (opts.completedStatus) {
-            await db().intent.update({
-              where: { id: row.id },
+            // CRITICAL: only flip to completed if the row is still in
+            // the in-flight state we set when claiming it. If the
+            // handler ran but then internally marked the row as
+            // 'failed' (e.g. mainnet-rejection guard, address validator,
+            // any other early-exit path that wrote 'failed' itself), we
+            // must NOT override that with 'executed'. The conditional
+            // updateMany makes this race-safe.
+            await db().intent.updateMany({
+              where: { id: row.id, status: opts.inFlightStatus },
               data: { status: opts.completedStatus },
             });
           }
