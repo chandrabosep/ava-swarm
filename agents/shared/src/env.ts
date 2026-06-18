@@ -53,4 +53,20 @@ export const env = {
 
   // Zerion
   zerionProxyUrl: () => required('ZERION_PROXY_URL'),
+
+  // Alchemy — used only when USE_TESTNET=true (Zerion doesn't index
+  // testnets). Same balance/price/metadata data Zerion gives us, just
+  // sourced from Alchemy's Portfolio API.
+  useTestnet: (): boolean => {
+    const v = optional('USE_TESTNET', 'false')!.toLowerCase();
+    return v === 'true' || v === '1' || v === 'yes';
+  },
+  alchemyApiKey: () => required('ALCHEMY_API_KEY'),
+  /** Comma-separated Alchemy network identifiers (e.g.
+   *  "eth-sepolia,base-sepolia"). Default = Sepolia + Base Sepolia. */
+  alchemyNetworks: (): string[] =>
+    optional('ALCHEMY_NETWORKS', 'eth-sepolia,base-sepolia')!
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
 };
