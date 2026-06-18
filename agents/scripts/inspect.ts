@@ -85,6 +85,32 @@ async function main() {
     }),
   );
 
+  // Recent execution receipts — these hold the txHashes from successful
+  // swaps. Useful when an intent is marked 'executed' but the log file
+  // was overwritten and we still want the chain receipt.
+  const events = await db.event.findMany({
+    where: {
+      kind: { in: ['intent.executed', 'intent.failed'] },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  });
+  console.log('\n=== Last 10 execution events ===');
+  console.table(
+    events.map((e) => {
+      const p = (e.payload ?? {}) as Record<string, unknown>;
+      return {
+        kind: e.kind,
+        intent: (p.intentId as string | undefined)?.slice(0, 8),
+        txHash:
+          typeof p.txHash === 'string'
+            ? (p.txHash as string).slice(0, 14) + '…'
+            : '-',
+        ago: ((Date.now() - e.createdAt.getTime()) / 1000).toFixed(0) + 's',
+      };
+    }),
+  );
+
   const intents = await db.intent.findMany({
     orderBy: { createdAt: 'desc' },
     take: 15,
@@ -97,15 +123,18 @@ async function main() {
       payload: true,
     },
   });
-  console.log('\n=== Last 15 intents ===');
+  console.log('\n=== Last 15 intents (with chain from payload) ===');
   console.table(
     intents.map((i) => {
-      const p = i.payload as { kind?: string } | null;
+      const p = i.payload as
+        | { kind?: string; chain?: string; tokenIn?: string; tokenOut?: string }
+        | null;
       return {
+        id: i.id.slice(0, 8),
         from: i.fromAgent,
         status: i.status,
         kind: p?.kind ?? '?',
-        safe: i.safeAddress.slice(0, 10) + '…' + i.safeAddress.slice(-4),
+        chain: p?.chain ?? '-',
         ago: ((Date.now() - i.createdAt.getTime()) / 1000).toFixed(0) + 's',
       };
     }),

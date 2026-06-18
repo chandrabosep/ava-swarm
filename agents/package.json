@@ -22,7 +22,7 @@
     "dev:router": "npm --workspace router run dev",
     "dev:executor": "npm --workspace executor run dev",
     "dev:all": "concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:dev:api\" \"npm:dev:pm\" \"npm:dev:alm\" \"npm:dev:router\" \"npm:dev:executor\"",
-    "dev:all:logged": "mkdir -p logs && concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:dev:api 2>&1 | tee logs/api.log\" \"npm:dev:pm 2>&1 | tee logs/pm.log\" \"npm:dev:alm 2>&1 | tee logs/alm.log\" \"npm:dev:router 2>&1 | tee logs/router.log\" \"npm:dev:executor 2>&1 | tee logs/executor.log\""
+    "dev:all:logged": "mkdir -p logs && concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:dev:api 2>&1 | tee -a logs/api.log\" \"npm:dev:pm 2>&1 | tee -a logs/pm.log\" \"npm:dev:alm 2>&1 | tee -a logs/alm.log\" \"npm:dev:router 2>&1 | tee -a logs/router.log\" \"npm:dev:executor 2>&1 | tee -a logs/executor.log\""
   },
   "devDependencies": {
     "concurrently": "^9.0.0",

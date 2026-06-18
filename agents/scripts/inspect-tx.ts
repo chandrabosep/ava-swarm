@@ -10,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: path.resolve(here, '..', '.env') });
 
 import { createPublicClient, decodeEventLog, formatEther, http, parseAbi } from 'viem';
-import { mainnet } from 'viem/chains';
+import { baseSepolia, mainnet, sepolia } from 'viem/chains';
 
 const TX = process.argv[2] as `0x${string}` | undefined;
 if (!TX) {
@@ -24,15 +24,69 @@ const wethDepositAbi = parseAbi([
 ]);
 
 async function main() {
-  const c = createPublicClient({
-    chain: mainnet,
-    transport: http(
-      process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com',
-    ),
-  });
-  const tx = await c.getTransaction({ hash: TX! });
-  const receipt = await c.getTransactionReceipt({ hash: TX! });
-  console.log(`tx ${TX}\n`);
+  // Try mainnet, sepolia, base-sepolia in order — first one that
+  // returns a receipt wins. Tells us definitively which chain a
+  // KH-emitted tx hash actually landed on.
+  const candidates = [
+    {
+      name: 'mainnet',
+      etherscan: 'https://etherscan.io',
+      client: createPublicClient({
+        chain: mainnet,
+        transport: http(
+          process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com',
+        ),
+      }),
+    },
+    {
+      name: 'sepolia',
+      etherscan: 'https://sepolia.etherscan.io',
+      client: createPublicClient({
+        chain: sepolia,
+        transport: http(
+          process.env.SEPOLIA_RPC_URL ??
+            'https://ethereum-sepolia.publicnode.com',
+        ),
+      }),
+    },
+    {
+      name: 'base-sepolia',
+      etherscan: 'https://sepolia.basescan.org',
+      client: createPublicClient({
+        chain: baseSepolia,
+        transport: http(
+          process.env.BASE_SEPOLIA_RPC_URL ??
+            'https://base-sepolia.publicnode.com',
+        ),
+      }),
+    },
+  ];
+
+  let tx: Awaited<ReturnType<(typeof candidates)[0]['client']['getTransaction']>> | null = null;
+  let receipt: Awaited<
+    ReturnType<(typeof candidates)[0]['client']['getTransactionReceipt']>
+  > | null = null;
+  let landed: (typeof candidates)[number] | null = null;
+
+  for (const cand of candidates) {
+    try {
+      tx = await cand.client.getTransaction({ hash: TX! });
+      receipt = await cand.client.getTransactionReceipt({ hash: TX! });
+      landed = cand;
+      break;
+    } catch {
+      // try next
+    }
+  }
+
+  if (!tx || !receipt || !landed) {
+    console.log(`tx ${TX} NOT FOUND on mainnet, sepolia, or base-sepolia`);
+    return;
+  }
+
+  console.log(`tx ${TX}`);
+  console.log(`chain:    ${landed.name.toUpperCase()}  ← ${landed.etherscan}/tx/${TX}\n`);
+  const c = landed.client;
   console.log(`from:     ${tx.from}`);
   console.log(`to:       ${tx.to}`);
   console.log(`value:    ${formatEther(tx.value)} ETH`);
