@@ -15,15 +15,18 @@ import type { Address, Hex } from 'viem';
 /**
  * The chains we support. Keep this list aligned with src/config/chains.ts —
  * Reown AppKit + Wagmi need to know about the same set.
+ *
+ * Testnet build: every name maps to its Sepolia equivalent so the rest of
+ * the codebase doesn't need to know it's running on a testnet.
  */
 export const SUPPORTED_CHAINS = ['unichain', 'base', 'mainnet'] as const;
 export type SupportedChain = (typeof SUPPORTED_CHAINS)[number];
 
-/** Numeric chain ids for the supported chains. */
+/** Numeric chain ids for the supported chains. (Testnet variants.) */
 export const CHAIN_ID: Record<SupportedChain, number> = {
-  unichain: 130,
-  base: 8453,
-  mainnet: 1,
+  unichain: 1301, // Unichain Sepolia
+  base: 84532, // Base Sepolia
+  mainnet: 11155111, // Ethereum Sepolia
 };
 
 // --- Smart account ---------------------------------------------------------
@@ -60,8 +63,17 @@ export interface ChainDeployment {
 
 // --- Session keys ----------------------------------------------------------
 
-/** Which agent in the swarm a given session key represents. */
-export type SessionAgent = 'alm' | 'executor';
+/**
+ * Which agent in the swarm a given session represents.
+ *
+ *   pm, router  — backend-only, do NOT sign onchain. They still get a
+ *                 backend Session row so the runtime ticks for them.
+ *   alm, executor — sign UserOps via Smart Sessions; need an onchain grant.
+ *
+ * `defaultPolicyFor()` is only defined for the signing agents.
+ */
+export type SessionAgent = 'pm' | 'alm' | 'router' | 'executor';
+export type SigningSessionAgent = 'alm' | 'executor';
 
 export interface SessionKey {
   agent: SessionAgent;

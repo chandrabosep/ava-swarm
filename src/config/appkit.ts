@@ -1,6 +1,6 @@
 import { createAppKit } from '@reown/appkit/react';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
-import { mainnet, base, unichain } from '@reown/appkit/networks';
+import { sepolia, baseSepolia, unichainSepolia } from '@reown/appkit/networks';
 import type { AppKitNetwork } from '@reown/appkit/networks';
 
 // Reown AppKit + Wagmi setup.
@@ -18,9 +18,9 @@ if (!projectId) {
 }
 
 export const networks: [AppKitNetwork, ...AppKitNetwork[]] = [
-  unichain,
-  base,
-  mainnet,
+  unichainSepolia,
+  baseSepolia,
+  sepolia,
 ];
 
 export const wagmiAdapter = new WagmiAdapter({
@@ -52,12 +52,12 @@ createAppKit({
     url: APP_URL,
     icons: [APP_ICON],
   },
-  // Tighten the connector surface to what actually works in an extension
-  // new-tab context. Injected / EIP-6963 wallets aren't reachable from
-  // chrome-extension://<id>, and leaving them on can cause initialization
-  // warnings in dev tools that look (incorrectly) like the cause of QR issues.
-  enableInjected: false,
-  enableEIP6963: false,
+  // Surface every connector we can. Modern MetaMask + most extension
+  // wallets support EIP-6963 announcement on chrome-extension:// pages,
+  // so users with the wallet installed can click "MetaMask" directly
+  // without going through WalletConnect's QR flow.
+  enableInjected: true,
+  enableEIP6963: true,
   enableCoinbase: true,
   enableWalletConnect: true,
   features: {
