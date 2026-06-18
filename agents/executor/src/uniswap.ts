@@ -10,7 +10,18 @@
 
 import { env } from '@swarm/shared';
 
-const CHAIN_ID = { mainnet: 1, base: 8453, unichain: 130 } as const;
+// Chain IDs for the Uniswap Trading API's `tokenInChainId` /
+// `tokenOutChainId` fields. Per the docs, the API supports the testnets
+// listed below — we just need to actually pass the IDs.
+//   https://docs.uniswap.org/api/uniswap-x/supported-chains-and-tokens
+const CHAIN_ID = {
+  mainnet: 1,
+  base: 8453,
+  unichain: 130,
+  sepolia: 11155111,
+  'base-sepolia': 84532,
+  'unichain-sepolia': 1301,
+} as const;
 export type ChainName = keyof typeof CHAIN_ID;
 
 export interface QuoteRequest {

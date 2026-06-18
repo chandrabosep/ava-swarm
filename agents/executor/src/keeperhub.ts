@@ -28,22 +28,44 @@ import {
 } from './onchain.js';
 
 // KeeperHub's `uniswap/swap-exact-input` action wants `network` as a
-// chain id *string* (not a friendly name).
+// chain id *string*. execute_contract_call / execute_transfer take a
+// friendly network identifier instead — see KH_NETWORK_IDENT below.
 const NETWORK_CHAIN_ID = {
   mainnet: '1',
   base: '8453',
   unichain: '130',
+  sepolia: '11155111',
+  'base-sepolia': '84532',
 } as const;
 
 export type ChainName = keyof typeof NETWORK_CHAIN_ID;
 
+// Friendly network identifier KH expects in execute_contract_call /
+// execute_transfer. Authoritative list from KH's own error message:
+//   "Supported: mainnet, eth-mainnet, ethereum-mainnet, ethereum,
+//    sepolia, eth-sepolia, sepolia-testnet,
+//    base, base-mainnet, base-sepolia, base-testnet,
+//    tempo-testnet, tempo, tempo-mainnet,
+//    solana, solana-mainnet, solana-devnet, solana-testnet
+//    or numeric chain IDs"
+// Override with KH_NETWORK_<chain> if KH renames one.
+const KH_NETWORK_IDENT: Record<ChainName, string> = {
+  mainnet: process.env.KH_NETWORK_MAINNET ?? 'ethereum',
+  base: process.env.KH_NETWORK_BASE ?? 'base',
+  unichain: process.env.KH_NETWORK_UNICHAIN ?? 'unichain',
+  sepolia: process.env.KH_NETWORK_SEPOLIA ?? 'sepolia',
+  'base-sepolia': process.env.KH_NETWORK_BASE_SEPOLIA ?? 'base-testnet',
+};
+
 // WETH addresses per chain — Uniswap V3 single-hop swaps don't accept
 // native ETH, so we substitute WETH. The KeeperHub wallet must hold
-// WETH (or have the wrap step happen elsewhere).
+// WETH (or have the wrap step happen via WETH9.deposit() / fallback).
 const WETH_ADDRESS: Record<ChainName, `0x${string}`> = {
   mainnet: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
   base: '0x4200000000000000000000000000000000000006',
   unichain: '0x4200000000000000000000000000000000000006',
+  sepolia: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+  'base-sepolia': '0x4200000000000000000000000000000000000006',
 };
 
 const NATIVE_ETH = '0x0000000000000000000000000000000000000000';
@@ -98,7 +120,7 @@ export async function ensureTokenApproved(
       `[keeperhub] allowance(${token}→SwapRouter02) is ${allowance} (< threshold) — refreshing`,
     );
     const raw = await callKeeperhubTool('execute_contract_call', {
-      network: 'ethereum',
+      network: KH_NETWORK_IDENT[chain],
       contract_address: token,
       function_name: 'approve',
       function_args: JSON.stringify([UNISWAP_SWAP_ROUTER02, MAX_UINT256]),
@@ -124,7 +146,7 @@ export async function ensureTokenApproved(
     // Wait for the approve to actually mine before we let the caller
     // proceed to the swap — otherwise SwapRouter02's transferFrom will
     // see a still-zero allowance and revert with STF.
-    await waitForKhExecution(data, `approve(${token})`);
+    await waitForKhExecution(data, `approve(${token})`, chain);
     // Re-read allowance to confirm it landed (RPCs sometimes lag a
     // block or two after KH says "completed").
     for (let i = 0; i < 10; i++) {
@@ -158,16 +180,31 @@ export async function ensureTokenApproved(
 async function waitForKhExecution(
   data: { executionId?: string; transactionHash?: string },
   label: string,
+  chain: ChainName = 'mainnet',
 ): Promise<void> {
   if (data.transactionHash) {
     // Fast path: KH already returned a tx hash → wait for receipt.
-    const { mainnet } = await import('viem/chains');
+    const { mainnet, sepolia, base, baseSepolia } = await import('viem/chains');
     const { createPublicClient, http } = await import('viem');
+    const viemChain =
+      chain === 'sepolia'
+        ? sepolia
+        : chain === 'base-sepolia'
+          ? baseSepolia
+          : chain === 'base'
+            ? base
+            : mainnet;
+    const rpc =
+      chain === 'sepolia'
+        ? process.env.SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia.publicnode.com'
+        : chain === 'base-sepolia'
+          ? process.env.BASE_SEPOLIA_RPC_URL ?? 'https://base-sepolia.publicnode.com'
+          : chain === 'base'
+            ? process.env.BASE_RPC_URL ?? 'https://base.publicnode.com'
+            : process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com';
     const c = createPublicClient({
-      chain: mainnet,
-      transport: http(
-        process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com',
-      ),
+      chain: viemChain,
+      transport: http(rpc),
     });
     try {
       await c.waitForTransactionReceipt({
@@ -270,7 +307,7 @@ export async function ensureWethBalance(
   // (decimal ETH string, not wei). asset omitted = native ETH.
   const wrapAmountEth = (Number(wrapAmount) / 1e18).toFixed(18);
   const raw = await callKeeperhubTool('execute_transfer', {
-    network: 'ethereum',
+    network: KH_NETWORK_IDENT[chain],
     recipient_address: wethAddr,
     amount: wrapAmountEth,
     integration_id: process.env.KEEPERHUB_INTEGRATION_ID,
@@ -290,7 +327,7 @@ export async function ensureWethBalance(
   );
   // Wait for the wrap to actually mine — otherwise the swap fires
   // before transferFrom can pull WETH and reverts with STF.
-  await waitForKhExecution(data, 'wrap');
+  await waitForKhExecution(data, 'wrap', chain);
   // Then poll the public RPC for the new balance to settle (1 block lag).
   for (let i = 0; i < 30; i++) {
     const bal = await getErc20Balance(chain as OnchainChainName, wethAddr);

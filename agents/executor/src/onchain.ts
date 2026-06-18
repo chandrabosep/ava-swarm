@@ -14,16 +14,23 @@
 // MCP tool and cached for the lifetime of the executor process.
 
 import { createPublicClient, erc20Abi, http, type Address } from 'viem';
-import { base, mainnet } from 'viem/chains';
+import { base, baseSepolia, mainnet, sepolia } from 'viem/chains';
 
 import { callKeeperhubTool } from './keeperhub-mcp.js';
 
-export type ChainName = 'mainnet' | 'base' | 'unichain';
+export type ChainName =
+  | 'mainnet'
+  | 'base'
+  | 'unichain'
+  | 'sepolia'
+  | 'base-sepolia';
 
 export const WETH_ADDRESS: Record<ChainName, Address> = {
   mainnet: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
   base: '0x4200000000000000000000000000000000000006',
   unichain: '0x4200000000000000000000000000000000000006',
+  sepolia: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+  'base-sepolia': '0x4200000000000000000000000000000000000006',
 };
 
 /** Uniswap V3 SwapRouter02 (immutable, same on every supported chain). */
@@ -41,12 +48,22 @@ function rpcUrl(chain: ChainName): string {
       return (
         process.env.UNICHAIN_RPC_URL ?? 'https://unichain.publicnode.com'
       );
+    case 'sepolia':
+      return (
+        process.env.SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia.publicnode.com'
+      );
+    case 'base-sepolia':
+      return (
+        process.env.BASE_SEPOLIA_RPC_URL ?? 'https://base-sepolia.publicnode.com'
+      );
   }
 }
 
 function chainFor(chain: ChainName) {
   if (chain === 'mainnet') return mainnet;
   if (chain === 'base') return base;
+  if (chain === 'sepolia') return sepolia;
+  if (chain === 'base-sepolia') return baseSepolia;
   // viem doesn't ship a unichain chain spec — minimal stub is fine for
   // read-only RPC calls (chainId is only checked on write paths).
   return { ...mainnet, id: 130 };
