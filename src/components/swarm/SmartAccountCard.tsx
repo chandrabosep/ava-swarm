@@ -7,6 +7,7 @@ import { Badge } from '@/components/common/Badge';
 import { useSwarmStatus } from '@/hooks/useSwarmStatus';
 import { DelegateSwarmDialog } from './DelegateSwarmDialog';
 import { shortAddress } from '@/lib/format';
+import { USE_TESTNET } from '@/config/swarm';
 
 /**
  * Top-of-dashboard tile that shows delegation status.
@@ -83,6 +84,7 @@ export function SmartAccountCard() {
             <Badge tone="positive" dot>
               delegated
             </Badge>
+            {USE_TESTNET && <Badge tone="warning">testnet</Badge>}
           </div>
           <div className="mt-2 font-mono text-fg text-base">
             {shortAddress(owner)}

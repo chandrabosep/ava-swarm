@@ -20,6 +20,11 @@ import {
   type PositionsQuery,
   type TransactionsQuery,
 } from '@/lib/zerion';
+import {
+  getAlchemyPositions,
+  getAlchemyPortfolio,
+} from '@/lib/alchemy';
+import { USE_TESTNET } from '@/config/swarm';
 
 /** Don't retry 429s — they only get worse the more we hit them. */
 function shouldRetry(failureCount: number, error: unknown): boolean {
@@ -31,8 +36,16 @@ export function useFungiblePositions(query: PositionsQuery = {}) {
   const { address } = useAccount();
   const lowerAddress = address?.toLowerCase();
   return useQuery({
-    queryKey: ['zerion', 'positions', lowerAddress, query],
-    queryFn: () => getFungiblePositions(address!, query),
+    queryKey: [
+      USE_TESTNET ? 'alchemy' : 'zerion',
+      'positions',
+      lowerAddress,
+      query,
+    ],
+    queryFn: () =>
+      USE_TESTNET
+        ? getAlchemyPositions(address!)
+        : getFungiblePositions(address!, query),
     enabled: !!address,
     retry: shouldRetry,
   });
@@ -42,8 +55,16 @@ export function useWalletPortfolio(currency: string = 'usd') {
   const { address } = useAccount();
   const lowerAddress = address?.toLowerCase();
   return useQuery({
-    queryKey: ['zerion', 'portfolio', lowerAddress, currency],
-    queryFn: () => getWalletPortfolio(address!, currency),
+    queryKey: [
+      USE_TESTNET ? 'alchemy' : 'zerion',
+      'portfolio',
+      lowerAddress,
+      currency,
+    ],
+    queryFn: () =>
+      USE_TESTNET
+        ? getAlchemyPortfolio(address!)
+        : getWalletPortfolio(address!, currency),
     enabled: !!address,
     retry: shouldRetry,
   });

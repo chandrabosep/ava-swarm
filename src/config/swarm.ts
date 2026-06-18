@@ -40,3 +40,36 @@ export type SessionAgentRole = 'alm' | 'executor';
 export const AGENTS_API_URL =
   (import.meta.env.VITE_AGENTS_API_URL as string | undefined) ??
   'http://localhost:8787';
+
+/**
+ * When true, the dashboard runs in testnet mode:
+ *   - wallet connect offers Sepolia / Base Sepolia
+ *   - portfolio is read from Alchemy (Zerion doesn't index testnets)
+ *   - explorer links go to sepolia.etherscan.io / sepolia.basescan.org
+ *
+ * Toggle via VITE_USE_TESTNET=true in `.env.local`. Mirrors the agents'
+ * USE_TESTNET env so a single flag flips both halves of the stack.
+ */
+export const USE_TESTNET =
+  String(import.meta.env.VITE_USE_TESTNET ?? '').toLowerCase() === 'true';
+
+/**
+ * Alchemy API key — used for browser-side portfolio reads when
+ * USE_TESTNET is on. Falls back to the public docs-demo key (rate-
+ * limited) if VITE_ALCHEMY_API_KEY isn't set.
+ */
+export const ALCHEMY_API_KEY =
+  (import.meta.env.VITE_ALCHEMY_API_KEY as string | undefined) ??
+  'docs-demo';
+
+/**
+ * Comma-separated Alchemy network identifiers used for testnet portfolio
+ * reads. Defaults to Sepolia + Base Sepolia.
+ */
+export const ALCHEMY_NETWORKS = (
+  (import.meta.env.VITE_ALCHEMY_NETWORKS as string | undefined) ??
+  'eth-sepolia,base-sepolia'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
