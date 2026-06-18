@@ -2,7 +2,7 @@ import { Surface } from '@/components/common/Surface';
 import { Badge } from '@/components/common/Badge';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '@/lib/mock';
 import { formatRelative } from '@/lib/format';
-import { useSessions } from '@/hooks/useSafe';
+import { useSwarmStatus } from '@/hooks/useSwarmStatus';
 import { shortAddress } from '@/lib/format';
 import type { Agent, AgentRole, AgentStatus } from '@/types';
 
@@ -10,6 +10,7 @@ const STATUS_TONE: Record<AgentStatus, 'neutral' | 'accent' | 'positive'> = {
   offline: 'neutral',
   idle: 'accent',
   busy: 'positive',
+  online: 'positive',
 };
 
 /** Roles that need an onchain session key. PM/Router stay offchain. */
@@ -20,15 +21,15 @@ interface AgentCardProps {
 }
 
 export function AgentCard({ agent }: AgentCardProps) {
-  const sessions = useSessions();
+  const status = useSwarmStatus();
 
-  // alm/executor map 1:1 to AgentRole; pm/router don't need a session.
-  const sessionKey =
-    agent.role === 'alm'
-      ? sessions.data?.alm
-      : agent.role === 'executor'
-        ? sessions.data?.executor
-        : undefined;
+  // Session granted = the agents API has a Session row for this agent on
+  // the user's current Safe. Live demo mode + real grants both flow
+  // through the same path.
+  const sessionRow = status.data?.sessions.find((s) => s.agent === agent.role);
+  const sessionKey = sessionRow?.sessionAddress as
+    | `0x${string}`
+    | undefined;
   const needsSession = NEEDS_SESSION.has(agent.role);
   const granted = needsSession && !!sessionKey;
 
@@ -43,7 +44,15 @@ export function AgentCard({ agent }: AgentCardProps) {
             {ROLE_LABELS[agent.role]}
           </div>
         </div>
-        <Badge tone={STATUS_TONE[agent.status]} dot>
+        <Badge
+          tone={STATUS_TONE[agent.status]}
+          dot
+          className={
+            agent.status === 'online' || agent.status === 'busy'
+              ? 'animate-pulse-soft'
+              : undefined
+          }
+        >
           {agent.status}
         </Badge>
       </div>
