@@ -24,12 +24,21 @@ export interface DispatchParams {
 export async function dispatch(params: DispatchParams): Promise<void> {
   const { ctx, safeAddress, originIntentId, swap } = params;
 
-  // Convert USD notional → tokenIn's smallest unit using the live price
-  // we got from Zerion. Uniswap's Trading API expects amountIn in token
-  // base units (e.g. wei for ETH). Without this conversion the quote
-  // returns "no quotes available" because, for an 18-decimal asset, the
-  // raw USD-as-microunits value is dust.
-  const tokensToSwap = swap.notionalUsd / swap.tokenInPriceUsd;
+  // Cap notional: PM sizes proposals against the user's EOA portfolio,
+  // but Executor swaps from the KH-managed wallet which is typically
+  // smaller (testnet faucet drops, demo-funded budgets). MAX_SWAP_USD
+  // protects against "wrap insufficient ETH" errors when the executing
+  // wallet can't cover what PM/Router propose. Defaults to no cap on
+  // mainnet; ~250 USD on testnet to fit a 0.3-ETH faucet drop.
+  const cap = process.env.MAX_SWAP_USD
+    ? parseFloat(process.env.MAX_SWAP_USD)
+    : Infinity;
+  const cappedNotionalUsd = Math.min(swap.notionalUsd, cap);
+
+  // Convert USD notional → tokenIn's smallest unit using the live price.
+  // Uniswap's Trading API expects amountIn in token base units (e.g.
+  // wei for ETH).
+  const tokensToSwap = cappedNotionalUsd / swap.tokenInPriceUsd;
   const amountInRaw = BigInt(
     Math.floor(tokensToSwap * Math.pow(10, swap.tokenInDecimals)),
   );
@@ -42,7 +51,7 @@ export async function dispatch(params: DispatchParams): Promise<void> {
     tokenOut: swap.tokenOut,
     amountIn: amountInRaw.toString(),
     minAmountOut: '0', // Executor enforces via Uniswap's minOut on /quote
-    notionalUsd: swap.notionalUsd,
+    notionalUsd: cappedNotionalUsd,
     origin: originIntentId,
   };
 
