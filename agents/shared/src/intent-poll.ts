@@ -30,6 +30,11 @@ export interface PollOptions<T> {
   failedStatus?: string;
   /** Poll interval ms. */
   intervalMs?: number;
+  /** Skip rows that were created less than this many ms ago. Gives
+   *  fast transports (AXL gossip, PG NOTIFY) a head start to claim
+   *  the row first. Default 1500ms — well above the ~1ms PG NOTIFY
+   *  delivery latency. */
+  graceMs?: number;
   /** Handler — called once per claimed row. */
   handle: (row: {
     id: string;
@@ -42,25 +47,36 @@ export interface PollOptions<T> {
 
 export function startIntentPoll<T>(opts: PollOptions<T>): () => void {
   const interval = opts.intervalMs ?? 2_000;
+  const graceMs = opts.graceMs ?? 1_500;
   let stopped = false;
 
   const tick = async () => {
     if (stopped) return;
     try {
-      // Atomically claim a batch of pending rows.
-      const claimed = await db().$transaction(async (tx) => {
-        const rows = await tx.intent.findMany({
-          where: { fromAgent: opts.fromAgent, status: opts.pendingStatus },
-          orderBy: { createdAt: 'asc' },
-          take: 16,
-        });
-        if (rows.length === 0) return [];
-        await tx.intent.updateMany({
-          where: { id: { in: rows.map((r) => r.id) } },
+      // Two-step claim: find candidates, then per-row updateMany with
+      // a status filter to atomically transition only rows that are
+      // still in pending state. If a fast transport (PG NOTIFY / AXL)
+      // already transitioned the row, our update affects 0 rows and
+      // we skip processing. This is the dedup primitive that lets
+      // all three transports race safely.
+      const cutoff = new Date(Date.now() - graceMs);
+      const candidates = await db().intent.findMany({
+        where: {
+          fromAgent: opts.fromAgent,
+          status: opts.pendingStatus,
+          createdAt: { lt: cutoff },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 16,
+      });
+      const claimed: typeof candidates = [];
+      for (const row of candidates) {
+        const res = await db().intent.updateMany({
+          where: { id: row.id, status: opts.pendingStatus },
           data: { status: opts.inFlightStatus },
         });
-        return rows;
-      });
+        if (res.count > 0) claimed.push(row);
+      }
 
       for (const row of claimed) {
         try {
