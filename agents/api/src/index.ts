@@ -152,6 +152,92 @@ app.post('/api/sessions', async (req, res) => {
   }
 });
 
+const VALID_PROFILES = ['conservative', 'balanced', 'aggressive', 'degen'];
+
+app.put('/api/users/:safeAddress/profile', async (req, res) => {
+  try {
+    const safeAddress = req.params.safeAddress.toLowerCase();
+    const { riskProfile, resetCustom } = req.body as {
+      riskProfile?: string;
+      resetCustom?: boolean;
+    };
+    if (!riskProfile || !VALID_PROFILES.includes(riskProfile)) {
+      return res
+        .status(400)
+        .json({ error: `riskProfile must be one of ${VALID_PROFILES.join(',')}` });
+    }
+    const user = await db().user.update({
+      where: { safeAddress },
+      data: {
+        riskProfile,
+        ...(resetCustom ? { customConfig: null as unknown as object } : {}),
+      },
+    });
+    log.info('risk profile updated', {
+      safeAddress,
+      riskProfile,
+      resetCustom: !!resetCustom,
+    });
+    return res.json({ ok: true, riskProfile: user.riskProfile });
+  } catch (err) {
+    log.error('update profile failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+const KNOB_BOUNDS: Record<
+  string,
+  { min: number; max: number; type: 'frac' | 'bps' | 'min' }
+> = {
+  stableFloor: { min: 0, max: 1, type: 'frac' },
+  maxToken: { min: 0.1, max: 1, type: 'frac' },
+  maxShiftPerTick: { min: 0.01, max: 1, type: 'frac' },
+  toleranceBps: { min: 10, max: 5000, type: 'bps' },
+  cadenceMinutes: { min: 1, max: 1440, type: 'min' },
+};
+
+app.put('/api/users/:safeAddress/config', async (req, res) => {
+  try {
+    const safeAddress = req.params.safeAddress.toLowerCase();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    // Merge incoming knobs into the existing customConfig, validating
+    // each one against its allowed range.
+    const existing =
+      ((await db().user.findUnique({ where: { safeAddress } }))
+        ?.customConfig as Record<string, unknown> | null) ?? {};
+    const merged: Record<string, number> = {
+      ...(existing as Record<string, number>),
+    };
+    for (const [k, v] of Object.entries(body)) {
+      const bounds = KNOB_BOUNDS[k];
+      if (!bounds) continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < bounds.min || n > bounds.max) {
+        return res.status(400).json({
+          error: `${k} must be between ${bounds.min} and ${bounds.max}`,
+        });
+      }
+      merged[k] = n;
+    }
+
+    const user = await db().user.update({
+      where: { safeAddress },
+      data: { customConfig: merged as unknown as object },
+    });
+
+    log.info('custom config updated', { safeAddress, knobs: Object.keys(body) });
+    return res.json({ ok: true, customConfig: user.customConfig });
+  } catch (err) {
+    log.error('update config failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
 app.get('/api/sessions/:safeAddress', async (req, res) => {
   try {
     const safeAddress = req.params.safeAddress.toLowerCase();
@@ -213,9 +299,13 @@ app.get('/api/status/:safeAddress', async (req, res) => {
       };
     });
 
+    const userRow = await db().user.findUnique({ where: { safeAddress } });
+
     return res.json({
       safeAddress,
       activated: sessions.length > 0,
+      riskProfile: userRow?.riskProfile ?? 'balanced',
+      customConfig: userRow?.customConfig ?? null,
       sessions: sessions.map((s) => ({
         agent: s.agent,
         sessionAddress: s.sessionAddress,

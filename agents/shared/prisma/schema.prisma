@@ -36,6 +36,15 @@ model User {
   ownerEoa    String   @map("owner_eoa")
   /// Comma-separated list of chains where the Safe is deployed + active.
   chains      String   @default("")
+  /// User-tunable risk profile. PM reads this every tick to pick its
+  /// system prompt + tolerance + cadence. One of:
+  /// 'conservative' | 'balanced' | 'aggressive' | 'degen'.
+  riskProfile String   @default("balanced") @map("risk_profile")
+  /// Optional per-knob overrides on top of the profile preset. Any key
+  /// from ProfileConfig can be customized: stableFloor, maxToken,
+  /// maxShiftPerTick, toleranceBps, cadenceMinutes. PM merges this on
+  /// top of the profile defaults each tick.
+  customConfig Json?   @map("custom_config")
   createdAt   DateTime @default(now()) @map("created_at")
 
   sessions    Session[]

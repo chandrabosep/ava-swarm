@@ -19,6 +19,7 @@ import OpenAI from 'openai';
 
 import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
+import { profileFor, type RiskProfile } from './profiles.js';
 
 const ALLOWED_TOKENS = ['ETH', 'WBTC', 'USDC', 'UNI'] as const;
 
@@ -29,9 +30,16 @@ export interface DecideParams {
   toleranceBps: number;
   /** Free-form market context (news headlines, signals). Phase B-2 will fill this. */
   context?: string;
+  /** Risk profile from the User row. Drives prompt + caps. */
+  riskProfile?: RiskProfile;
 }
 
-const SYSTEM = `You are a conservative DeFi portfolio manager agent.
+function buildSystemPrompt(profile: RiskProfile): string {
+  const cfg = profileFor(profile).config;
+  const stablePct = Math.round(cfg.stableFloor * 100);
+  const maxPct = Math.round(cfg.maxToken * 100);
+  const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
+  return `${cfg.persona}
 
 Your job is to propose a target allocation across the allowed token
 universe given the user's current portfolio. You output JSON ONLY,
@@ -49,12 +57,12 @@ matching this schema:
 Rules:
 1. Allowed symbols: ${ALLOWED_TOKENS.join(', ')}.
 2. weights sum to exactly 1.0.
-3. No single token weight > 0.6.
-4. Stablecoin floor (USDC) >= 0.20 unless user is explicitly aggressive.
-5. Move at most 0.20 in absolute weight from the current allocation per
-   tick (smooth changes).
-6. Be quantitative in the rationale. Reference current weights and
-   24h moves you observed.`;
+3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
+4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
+5. Move at most ${cfg.maxShiftPerTick.toFixed(2)} (${shiftPct}%) in absolute
+   weight from the current allocation per tick (smooth changes).
+6. Be quantitative in the rationale. Reference current weights and 24h moves.`;
+}
 
 export async function decideAllocation(
   params: DecideParams,
@@ -65,6 +73,7 @@ export async function decideAllocation(
   });
 
   const userPrompt = buildUserPrompt(params);
+  const system = buildSystemPrompt(params.riskProfile ?? 'balanced');
 
   const res = await client.chat.completions.create({
     model: env.groqModel(),
@@ -72,7 +81,7 @@ export async function decideAllocation(
     temperature: 0.3,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: SYSTEM },
+      { role: 'system', content: system },
       { role: 'user', content: userPrompt },
     ],
   });
