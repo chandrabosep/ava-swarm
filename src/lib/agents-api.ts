@@ -32,3 +32,46 @@ export async function registerSession(input: RegisterSessionInput): Promise<void
     throw new Error(`registerSession ${res.status}: ${text || res.statusText}`);
   }
 }
+
+export async function setRiskProfile(
+  safeAddress: string,
+  riskProfile: 'conservative' | 'balanced' | 'aggressive' | 'degen',
+  options?: { resetCustom?: boolean },
+): Promise<void> {
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/users/${safeAddress.toLowerCase()}/profile`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ riskProfile, resetCustom: options?.resetCustom }),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`setRiskProfile ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+export async function setCustomConfig(
+  safeAddress: string,
+  patch: Partial<{
+    stableFloor: number;
+    maxToken: number;
+    maxShiftPerTick: number;
+    toleranceBps: number;
+    cadenceMinutes: number;
+  }>,
+): Promise<void> {
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/users/${safeAddress.toLowerCase()}/config`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`setCustomConfig ${res.status}: ${text || res.statusText}`);
+  }
+}

@@ -3,6 +3,7 @@ import { SummaryCards } from '@/components/portfolio/SummaryCards';
 import { AllocationChart } from '@/components/portfolio/AllocationChart';
 import { AgentStatusPanel } from '@/components/agents/AgentStatusPanel';
 import { SmartAccountCard } from '@/components/swarm/SmartAccountCard';
+import { RiskProfileCard } from '@/components/swarm/RiskProfileCard';
 
 export default function NewTab() {
   return (
@@ -20,6 +21,7 @@ export default function NewTab() {
         </section>
 
         <SmartAccountCard />
+        <RiskProfileCard />
         <AgentStatusPanel />
       </main>
       <RightRail />

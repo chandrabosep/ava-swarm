@@ -26,9 +26,25 @@ export interface IntentLogRow {
   createdAt: string;
 }
 
+export type RiskProfile =
+  | 'conservative'
+  | 'balanced'
+  | 'aggressive'
+  | 'degen';
+
+export interface CustomConfig {
+  stableFloor?: number;
+  maxToken?: number;
+  maxShiftPerTick?: number;
+  toleranceBps?: number;
+  cadenceMinutes?: number;
+}
+
 export interface SwarmStatus {
   safeAddress: string;
   activated: boolean;
+  riskProfile: RiskProfile;
+  customConfig: CustomConfig | null;
   sessions: Array<{ agent: SessionAgent; sessionAddress: string; validUntil: string }>;
   agents: AgentRuntimeRow[];
   intents: IntentLogRow[];
