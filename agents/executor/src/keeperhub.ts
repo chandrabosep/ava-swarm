@@ -17,6 +17,15 @@
 // Reference: https://docs.keeperhub.com/ai-tools
 
 import { callKeeperhubTool } from './keeperhub-mcp.js';
+import {
+  getErc20Allowance,
+  getErc20Balance,
+  getEthBalance,
+  getKeeperhubWalletAddress,
+  WETH_ADDRESS as WETH_ADDR,
+  SWAP_ROUTER_02,
+  type ChainName as OnchainChainName,
+} from './onchain.js';
 
 // KeeperHub's `uniswap/swap-exact-input` action wants `network` as a
 // chain id *string* (not a friendly name).
@@ -61,25 +70,36 @@ const ERC20_APPROVE_ABI = JSON.stringify([
   },
 ]);
 
-let setupRan = false;
+// Threshold: if WETH allowance to SwapRouter02 falls below this, run an
+// approve. Anything above this is treated as "already approved". Set to
+// 1 ETH-equivalent — comfortable headroom for hundreds of demo swaps.
+const ALLOWANCE_REFRESH_THRESHOLD = 10n ** 18n;
 
 /**
- * One-time wallet setup: approve SwapRouter02 to spend WETH so
- * `uniswap/swap-exact-input` can pull tokens via transferFrom. Idempotent
- * (re-running just bumps the allowance to MAX). Skipped after first
- * success in this process — restart to re-run.
+ * Make sure SwapRouter02 has a usable allowance for `token` from the KH
+ * wallet. Reads allowance via RPC and only fires `approve` when it's
+ * actually below the threshold — most ticks are a no-op after the
+ * first run. Works for any ERC-20, not just WETH (USDC→WBTC swaps
+ * need USDC approved, etc).
  */
-export async function ensureKeeperhubSetup(chain: ChainName): Promise<void> {
-  if (setupRan) return;
-  if (process.env.KEEPERHUB_SKIP_SETUP === 'true') {
-    setupRan = true;
-    return;
-  }
-  console.log('[keeperhub] running one-time setup: approve SwapRouter02 for WETH');
+export async function ensureTokenApproved(
+  chain: ChainName,
+  token: `0x${string}`,
+): Promise<void> {
+  if (process.env.KEEPERHUB_SKIP_SETUP === 'true') return;
   try {
+    const allowance = await getErc20Allowance(
+      chain as OnchainChainName,
+      token,
+      SWAP_ROUTER_02,
+    );
+    if (allowance >= ALLOWANCE_REFRESH_THRESHOLD) return; // already enough
+    console.log(
+      `[keeperhub] allowance(${token}→SwapRouter02) is ${allowance} (< threshold) — refreshing`,
+    );
     const raw = await callKeeperhubTool('execute_contract_call', {
       network: 'ethereum',
-      contract_address: WETH_ADDRESS[chain],
+      contract_address: token,
       function_name: 'approve',
       function_args: JSON.stringify([UNISWAP_SWAP_ROUTER02, MAX_UINT256]),
       abi: ERC20_APPROVE_ABI,
@@ -94,17 +114,195 @@ export async function ensureKeeperhubSetup(chain: ChainName): Promise<void> {
       error?: string;
     };
     if (data.success === false) {
-      console.warn('[keeperhub] approve failed:', data.error);
-    } else {
-      console.log('[keeperhub] approve submitted:', data.executionId ?? data.transactionHash);
+      console.warn(`[keeperhub] approve(${token}) failed:`, data.error);
+      return;
     }
+    console.log(
+      `[keeperhub] approve(${token}) submitted:`,
+      data.executionId ?? data.transactionHash,
+    );
+    // Wait for the approve to actually mine before we let the caller
+    // proceed to the swap — otherwise SwapRouter02's transferFrom will
+    // see a still-zero allowance and revert with STF.
+    await waitForKhExecution(data, `approve(${token})`);
+    // Re-read allowance to confirm it landed (RPCs sometimes lag a
+    // block or two after KH says "completed").
+    for (let i = 0; i < 10; i++) {
+      const a = await getErc20Allowance(
+        chain as OnchainChainName,
+        token,
+        SWAP_ROUTER_02,
+      );
+      if (a >= ALLOWANCE_REFRESH_THRESHOLD) {
+        console.log(`[keeperhub] approve(${token}) visible on chain`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    console.warn(
+      `[keeperhub] approve(${token}) tx confirmed but allowance read still 0 — proceeding`,
+    );
   } catch (err) {
     console.warn(
       '[keeperhub] approve threw:',
       err instanceof Error ? err.message : String(err),
     );
   }
-  setupRan = true;
+}
+
+/**
+ * Wait for a KH-submitted execution to terminate. Tries `transactionHash`
+ * via RPC if present (fast path), falls back to polling
+ * `get_direct_execution_status` via the MCP otherwise.
+ */
+async function waitForKhExecution(
+  data: { executionId?: string; transactionHash?: string },
+  label: string,
+): Promise<void> {
+  if (data.transactionHash) {
+    // Fast path: KH already returned a tx hash → wait for receipt.
+    const { mainnet } = await import('viem/chains');
+    const { createPublicClient, http } = await import('viem');
+    const c = createPublicClient({
+      chain: mainnet,
+      transport: http(
+        process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com',
+      ),
+    });
+    try {
+      await c.waitForTransactionReceipt({
+        hash: data.transactionHash as `0x${string}`,
+        timeout: 60_000,
+      });
+      console.log(`[keeperhub] ${label} mined: ${data.transactionHash}`);
+      return;
+    } catch (err) {
+      console.warn(
+        `[keeperhub] ${label} receipt wait failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return;
+    }
+  }
+  if (data.executionId) {
+    try {
+      const final = await waitForJob(data.executionId, {
+        timeoutMs: 60_000,
+        pollMs: 1_500,
+      });
+      console.log(
+        `[keeperhub] ${label} ${final.status}${final.txHash ? ` ${final.txHash}` : ''}`,
+      );
+    } catch (err) {
+      console.warn(
+        `[keeperhub] ${label} status poll failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
+/** Back-compat alias — older call sites pass a chain only and expect WETH. */
+export async function ensureKeeperhubSetup(chain: ChainName): Promise<void> {
+  return ensureTokenApproved(chain, WETH_ADDR[chain as OnchainChainName]);
+}
+
+/**
+ * Top up WETH balance via WETH9.deposit() if the KH wallet doesn't hold
+ * enough to cover this swap's amountIn. Wraps from native ETH; the
+ * shortfall is computed against `amountIn` plus a small buffer to absorb
+ * routing rounding.
+ *
+ * Only runs when tokenIn is WETH (the case Uniswap V3 single-hop swaps
+ * always reduce to). For WETH→? swaps the KH wallet effectively becomes
+ * a self-funding agent: the user deposits native ETH into the KH wallet
+ * once, agents wrap-on-demand from then on.
+ */
+const WETH_DEPOSIT_ABI = JSON.stringify([
+  {
+    type: 'function',
+    name: 'deposit',
+    stateMutability: 'payable',
+    inputs: [],
+    outputs: [],
+  },
+]);
+
+export async function ensureWethBalance(
+  chain: ChainName,
+  amountInWei: bigint,
+): Promise<void> {
+  if (process.env.KEEPERHUB_SKIP_WRAP === 'true') return;
+  const wallet = await getKeeperhubWalletAddress();
+  const wethAddr = WETH_ADDR[chain as OnchainChainName];
+  const wethBal = await getErc20Balance(chain as OnchainChainName, wethAddr);
+  if (wethBal >= amountInWei) {
+    return; // already enough
+  }
+  // Add 0.5% buffer so quote-time rounding doesn't push us under.
+  const shortfall = amountInWei - wethBal;
+  const wrapAmount = shortfall + shortfall / 200n;
+  const ethBal = await getEthBalance(chain as OnchainChainName);
+  // Reserve ETH for the gas of: this wrap (~30k gas) + the swap that
+  // follows (~150-200k gas) + a possible approve (~50k gas). At 20 gwei
+  // mainnet that's ~0.0005 ETH worst-case. Override with KH_GAS_RESERVE
+  // (decimal ETH) to be more conservative for tight wallets.
+  const gasReserve = process.env.KH_GAS_RESERVE
+    ? BigInt(Math.floor(parseFloat(process.env.KH_GAS_RESERVE) * 1e18))
+    : 500_000_000_000_000n; // 5e14 wei = 0.0005 ETH (~$1.50 at $3000/ETH)
+  if (ethBal <= wrapAmount + gasReserve) {
+    throw new Error(
+      `KH wallet ${wallet} has insufficient native ETH to wrap. Have ${ethBal} wei, need ${
+        wrapAmount + gasReserve
+      } wei (${wrapAmount} to wrap + ${gasReserve} gas reserve). Fund the wallet with native ETH first.`,
+    );
+  }
+  console.log(
+    `[keeperhub] wrapping ${wrapAmount} wei ETH → WETH (have ${wethBal}, need ${amountInWei})`,
+  );
+  // KH's execute_contract_call silently drops a `value` field — verified
+  // by inspect-tx showing wrap mined with value=0 (no-op). Use
+  // execute_transfer instead: plain ETH transfer to the WETH9 contract
+  // triggers its fallback function, which calls deposit() with the
+  // received value — same effect, signed-by-the-integration-wallet.
+  //
+  // Field names per KH MCP validator: `recipient_address` and `amount`
+  // (decimal ETH string, not wei). asset omitted = native ETH.
+  const wrapAmountEth = (Number(wrapAmount) / 1e18).toFixed(18);
+  const raw = await callKeeperhubTool('execute_transfer', {
+    network: 'ethereum',
+    recipient_address: wethAddr,
+    amount: wrapAmountEth,
+    integration_id: process.env.KEEPERHUB_INTEGRATION_ID,
+  });
+  const data = unwrapResult(raw) as {
+    success?: boolean;
+    executionId?: string;
+    transactionHash?: string;
+    error?: string;
+  };
+  if (data.success === false) {
+    throw new Error(`KH wrap failed: ${data.error ?? 'unknown'}`);
+  }
+  console.log(
+    '[keeperhub] wrap submitted:',
+    data.transactionHash ?? data.executionId,
+  );
+  // Wait for the wrap to actually mine — otherwise the swap fires
+  // before transferFrom can pull WETH and reverts with STF.
+  await waitForKhExecution(data, 'wrap');
+  // Then poll the public RPC for the new balance to settle (1 block lag).
+  for (let i = 0; i < 30; i++) {
+    const bal = await getErc20Balance(chain as OnchainChainName, wethAddr);
+    if (bal >= amountInWei) {
+      console.log(`[keeperhub] wrap confirmed on chain: WETH balance now ${bal}`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  console.warn(
+    '[keeperhub] wrap mined but balance read still lagging after 30s — proceeding anyway',
+  );
 }
 
 export interface SubmitJobRequest {
@@ -241,12 +439,9 @@ function idField(obj: Record<string, unknown> | undefined): string | undefined {
 export async function submitJob(
   req: SubmitJobRequest,
 ): Promise<{ jobId: string }> {
-  await ensureKeeperhubSetup(req.chain);
-  const actionType = await findUniswapSwapAction();
-
   // Uniswap V3 single-hop expects ERC-20 token addresses on both legs.
   // Native ETH (0x0) becomes WETH for the action's purposes; the KH
-  // wallet is expected to hold WETH.
+  // wallet either holds enough WETH or we wrap on-the-fly below.
   const tokenIn =
     req.swap.tokenIn.toLowerCase() === NATIVE_ETH
       ? WETH_ADDRESS[req.chain]
@@ -256,6 +451,34 @@ export async function submitJob(
       ? WETH_ADDRESS[req.chain]
       : req.swap.tokenOut;
 
+  // Pre-flight: if the swap pulls WETH from the KH wallet, make sure
+  // the wallet actually holds it. Wrap from native ETH if short. This
+  // is what previously failed with Error(STF) on every tick once the
+  // wallet's WETH was depleted.
+  if (tokenIn.toLowerCase() === WETH_ADDRESS[req.chain].toLowerCase()) {
+    await ensureWethBalance(req.chain, BigInt(req.swap.amountIn));
+  } else {
+    // Non-WETH tokenIn (e.g. USDC, WBTC) — the KH wallet must already
+    // hold this token. There's no auto-bridge from the user's EOA in
+    // this iteration. Surface a clear error instead of letting the
+    // swap STF inside execute_protocol_action.
+    const bal = await getErc20Balance(
+      req.chain as OnchainChainName,
+      tokenIn,
+    );
+    if (bal < BigInt(req.swap.amountIn)) {
+      const wallet = await getKeeperhubWalletAddress();
+      throw new Error(
+        `KH wallet ${wallet} doesn't hold enough ${tokenIn}: balance ${bal} < amountIn ${req.swap.amountIn}. ` +
+          `This swap requires the wallet to be funded with ${tokenIn} (no auto-bridge from EOA in this build).`,
+      );
+    }
+  }
+  // Approve whichever token the swap is pulling (WETH for ETH→*,
+  // USDC for USDC→*, etc). One-time per token per wallet.
+  await ensureTokenApproved(req.chain, tokenIn);
+
+  const actionType = await findUniswapSwapAction();
   const integrationId = process.env.KEEPERHUB_INTEGRATION_ID;
 
   const args: Record<string, unknown> = {
@@ -325,8 +548,12 @@ export async function getJobStatus(jobId: string): Promise<JobStatus> {
       txHash: jobId as `0x${string}`,
     };
   }
+  // KH MCP naming inconsistency strikes again — this tool wants
+  // `execution_id` (snake_case), unlike `get_wallet_integration` which
+  // wants `integrationId` (camelCase). Verified against live tool's
+  // Zod validation error.
   const raw = await callKeeperhubTool('get_direct_execution_status', {
-    executionId: jobId,
+    execution_id: jobId,
   });
   const data = unwrapResult(raw) as {
     executionId?: string;
