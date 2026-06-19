@@ -66,10 +66,10 @@ export function SummaryCards() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Surface className="p-5">
+        <Surface className="hud-corners p-5">
           <div className="flex items-start justify-between">
-            <div className="text-xs uppercase tracking-wider text-fg-subtle">
-              Total value
+            <div className="text-[10px] uppercase tracking-hud text-accent font-sans font-semibold">
+              Total Value
             </div>
             <Button
               size="sm"
@@ -81,7 +81,7 @@ export function SummaryCards() {
               {anyFetching ? '…' : '↻'}
             </Button>
           </div>
-          <div className="mt-2 text-3xl font-semibold tracking-tight">
+          <div className="hud-stat mt-2 text-3xl">
             {!isConnected ? (
               <span className="text-fg-muted">—</span>
             ) : portfolio.isLoading ? (
@@ -103,9 +103,9 @@ export function SummaryCards() {
           </div>
         </Surface>
 
-        <Surface className="p-5">
-          <div className="text-xs uppercase tracking-wider text-fg-subtle">
-            24h change
+        <Surface className="hud-corners p-5">
+          <div className="text-[10px] uppercase tracking-hud text-accent font-sans font-semibold">
+            24h Change
           </div>
           <ChangeValue
             isConnected={isConnected}
@@ -117,8 +117,8 @@ export function SummaryCards() {
           />
         </Surface>
 
-        <Surface className="p-5">
-          <div className="text-xs uppercase tracking-wider text-fg-subtle">
+        <Surface className="hud-corners p-5">
+          <div className="text-[10px] uppercase tracking-hud text-accent font-sans font-semibold">
             Unrealized PnL
           </div>
           <PnlValue
@@ -153,7 +153,7 @@ function ChangeValue({
   if (!isConnected) {
     return (
       <>
-        <div className="mt-2 text-3xl font-semibold tracking-tight text-fg-muted">
+        <div className="hud-stat mt-2 text-3xl text-fg-muted">
           —
         </div>
         <div className="mt-3 text-xs text-fg-subtle">awaiting wallet</div>
@@ -162,7 +162,7 @@ function ChangeValue({
   }
   if (isLoading) {
     return (
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-fg-muted">
+      <div className="hud-stat mt-2 text-3xl text-fg-muted">
         …
       </div>
     );
@@ -173,7 +173,7 @@ function ChangeValue({
   const positive = changeUsd >= 0;
   return (
     <>
-      <div className="mt-2 text-3xl font-semibold tracking-tight">
+      <div className="hud-stat mt-2 text-3xl">
         <span className={positive ? 'text-positive' : 'text-negative'}>
           {positive ? '+' : ''}
           {formatUsd(changeUsd)}
@@ -199,7 +199,7 @@ function PnlValue({ isConnected, isLoading, hasError, unrealized }: PnlProps) {
   if (!isConnected) {
     return (
       <>
-        <div className="mt-2 text-3xl font-semibold tracking-tight text-fg-muted">
+        <div className="hud-stat mt-2 text-3xl text-fg-muted">
           —
         </div>
         <div className="mt-3 text-xs text-fg-subtle">awaiting wallet</div>
@@ -208,7 +208,7 @@ function PnlValue({ isConnected, isLoading, hasError, unrealized }: PnlProps) {
   }
   if (isLoading) {
     return (
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-fg-muted">
+      <div className="hud-stat mt-2 text-3xl text-fg-muted">
         …
       </div>
     );
@@ -219,7 +219,7 @@ function PnlValue({ isConnected, isLoading, hasError, unrealized }: PnlProps) {
   const positive = unrealized >= 0;
   return (
     <>
-      <div className="mt-2 text-3xl font-semibold tracking-tight">
+      <div className="hud-stat mt-2 text-3xl">
         <span className={positive ? 'text-positive' : 'text-negative'}>
           {positive ? '+' : ''}
           {formatUsd(unrealized)}

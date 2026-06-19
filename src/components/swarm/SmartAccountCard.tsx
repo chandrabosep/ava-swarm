@@ -29,7 +29,7 @@ export function SmartAccountCard() {
 
   if (!isConnected || !owner) {
     return (
-      <Surface className="p-5">
+      <Surface className="hud-corners p-5">
         <Header subtitle="Connect a wallet above to set up your swarm." />
       </Surface>
     );
@@ -42,7 +42,7 @@ export function SmartAccountCard() {
   if (!activated) {
     return (
       <>
-        <Surface className="p-5">
+        <Surface className="hud-corners p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
               <Header subtitle="One signature delegates scoped authority to the four agents. Funds stay in your EOA — no smart-contract deploy, no funding, no migration. Powered by EIP-7702." />
@@ -74,19 +74,17 @@ export function SmartAccountCard() {
   const expiresIn = validUntil ? humanExpiry(validUntil) : '—';
 
   return (
-    <Surface className="p-5">
+    <Surface className="hud-corners p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-semibold tracking-tight">
-              Smart account
-            </h2>
+            <h2 className="hud-title text-sm">Smart Account</h2>
             <Badge tone="positive" dot>
               delegated
             </Badge>
             {USE_TESTNET && <Badge tone="warning">testnet</Badge>}
           </div>
-          <div className="mt-2 font-mono text-fg text-base">
+          <div className="mt-3 font-mono text-accent text-base tracking-wide">
             {shortAddress(owner)}
           </div>
           <div className="mt-1 text-xs text-fg-subtle">
@@ -105,8 +103,8 @@ export function SmartAccountCard() {
 function Header({ subtitle }: { subtitle: string }) {
   return (
     <>
-      <h2 className="text-sm font-semibold tracking-tight">Smart account</h2>
-      <p className="mt-1 text-xs text-fg-muted leading-relaxed max-w-xl">
+      <h2 className="hud-title text-sm">Smart Account</h2>
+      <p className="mt-2 text-xs text-fg-muted leading-relaxed max-w-xl">
         {subtitle}
       </p>
     </>

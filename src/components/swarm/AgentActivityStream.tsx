@@ -319,8 +319,8 @@ export function AgentActivityStream() {
   return (
     <section>
       <div className="flex items-baseline justify-between mb-3">
-        <h2 className="text-sm font-semibold">Agent activity</h2>
-        <span className="text-[11px] text-fg-subtle uppercase tracking-wider">
+        <h2 className="hud-title text-sm">Agent Feed</h2>
+        <span className="text-[10px] text-fg-subtle uppercase tracking-hud font-sans">
           {rows.length} live
         </span>
       </div>

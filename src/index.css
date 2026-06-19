@@ -13,25 +13,208 @@
     font-feature-settings:
       'cv11' on,
       'ss01' on;
+    /* Layered HUD canvas:
+       1) holographic dot grid (subtle pan, tailwind animation)
+       2) two large vignette glows in cyan + magenta
+       3) the deep navy base color */
+    background-color: #040714;
+    background-image:
+      linear-gradient(rgba(0, 229, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 229, 255, 0.05) 1px, transparent 1px),
+      radial-gradient(
+        circle at 12% 10%,
+        rgba(0, 229, 255, 0.18),
+        transparent 55%
+      ),
+      radial-gradient(
+        circle at 90% 90%,
+        rgba(255, 61, 240, 0.15),
+        transparent 50%
+      );
+    background-size:
+      32px 32px,
+      32px 32px,
+      auto,
+      auto;
+    background-attachment: fixed;
+  }
+
+  /* Cyan selection — looks more on-theme than the default. */
+  ::selection {
+    background-color: rgba(0, 229, 255, 0.35);
+    color: #ffffff;
+  }
+
+  /* HUD scrollbar — slim, neon. */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #1f2c5c, #2f4392);
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #00e5ff, #a855ff);
   }
 
   /* Reown AppKit's <appkit-button /> emits a default <button> we want to
      style consistently with the rest of the dashboard. */
   appkit-button::part(button) {
-    border-radius: 6px;
+    border-radius: 4px;
   }
 }
 
 @layer components {
+  /* ----------------------------------------------------------------------
+   * Surface — the primary HUD panel. Clipped corners (notched top-right
+   * + bottom-left) give the gaming readout vibe; the gradient border is
+   * faked by stacking a thin neon line on top of the navy fill.
+   * -------------------------------------------------------------------- */
   .surface {
-    @apply bg-bg-surface border border-border rounded-lg shadow-surface;
+    @apply relative bg-bg-surface text-fg border border-border;
+    border-radius: 4px;
+    /* Notched corners. */
+    clip-path: polygon(
+      14px 0,
+      100% 0,
+      100% calc(100% - 14px),
+      calc(100% - 14px) 100%,
+      0 100%,
+      0 14px
+    );
+    background-image:
+      linear-gradient(180deg, rgba(0, 229, 255, 0.04), transparent 60%),
+      linear-gradient(180deg, #0d1530, #0a1126);
+    box-shadow:
+      0 0 0 1px rgba(0, 229, 255, 0.08) inset,
+      0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+      0 16px 32px -24px rgba(0, 0, 0, 0.75);
   }
 
   .surface-raised {
-    @apply bg-bg-raised border border-border-subtle rounded-lg;
+    @apply relative bg-bg-raised text-fg border border-border-subtle;
+    border-radius: 4px;
+    clip-path: polygon(
+      10px 0,
+      100% 0,
+      100% calc(100% - 10px),
+      calc(100% - 10px) 100%,
+      0 100%,
+      0 10px
+    );
+    background-image: linear-gradient(180deg, #0d1530, #080d1f);
+    box-shadow:
+      0 0 0 1px rgba(0, 229, 255, 0.06) inset,
+      0 8px 24px -16px rgba(0, 0, 0, 0.6);
   }
 
+  /* HUD-style pill / chip. */
   .badge {
-    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full border;
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px]
+      font-semibold tracking-wider uppercase rounded-sm border font-sans;
+  }
+
+  /* Animated scanline element — pure visual, mounted at <App> root. */
+  .hud-scanline {
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.02) 0,
+      rgba(255, 255, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: overlay;
+  }
+
+  .hud-scanline::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 140px;
+    background: linear-gradient(
+      to bottom,
+      transparent,
+      rgba(0, 229, 255, 0.06),
+      transparent
+    );
+    animation: scan 7s linear infinite;
+  }
+
+  /* Section title — corner brackets give a HUD readout feel. */
+  .hud-title {
+    @apply relative inline-flex items-center gap-2 font-display uppercase
+      tracking-hud text-fg;
+  }
+  .hud-title::before {
+    content: '';
+    width: 6px;
+    height: 14px;
+    border-left: 2px solid theme('colors.accent.DEFAULT');
+    border-top: 2px solid theme('colors.accent.DEFAULT');
+    box-shadow: -2px -2px 6px -1px rgba(0, 229, 255, 0.6);
+  }
+  .hud-title::after {
+    content: '';
+    width: 6px;
+    height: 14px;
+    border-right: 2px solid theme('colors.accent.DEFAULT');
+    border-bottom: 2px solid theme('colors.accent.DEFAULT');
+    box-shadow: 2px 2px 6px -1px rgba(0, 229, 255, 0.6);
+  }
+
+  /* Faint corner ticks — used as decoration on stat cards. */
+  .hud-corners::before,
+  .hud-corners::after {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-color: theme('colors.accent.DEFAULT');
+    opacity: 0.7;
+    pointer-events: none;
+  }
+  .hud-corners::before {
+    top: 6px;
+    left: 6px;
+    border-left: 1px solid;
+    border-top: 1px solid;
+  }
+  .hud-corners::after {
+    bottom: 6px;
+    right: 6px;
+    border-right: 1px solid;
+    border-bottom: 1px solid;
+  }
+
+  /* Big neon stat number. */
+  .hud-stat {
+    @apply font-display font-semibold tracking-wide;
+    text-shadow:
+      0 0 8px rgba(0, 229, 255, 0.55),
+      0 0 18px rgba(0, 229, 255, 0.25);
+  }
+
+  /* Glitchy wordmark for the top header. */
+  .hud-logo {
+    @apply font-display font-bold tracking-hud uppercase;
+    background: linear-gradient(
+      90deg,
+      #00e5ff 0%,
+      #a855ff 50%,
+      #ff3df0 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 0 22px rgba(0, 229, 255, 0.35);
   }
 }

@@ -14,7 +14,7 @@ export function RightRail() {
   const { isConnected } = useAccount();
 
   return (
-    <aside className="w-80 shrink-0 border-l border-border h-screen sticky top-0 p-4 overflow-y-auto space-y-6">
+    <aside className="w-[420px] shrink-0 border-l border-accent/20 h-full p-5 overflow-y-auto space-y-6 bg-bg/40 backdrop-blur-sm">
       {/* Connect / account button — driven by wagmi state, never disappears.
           See WalletButton.tsx for the details. */}
       <WalletButton />

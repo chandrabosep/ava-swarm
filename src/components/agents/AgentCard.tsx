@@ -47,18 +47,18 @@ export function AgentCard({ agent }: AgentCardProps) {
   return (
     <Surface
       variant="raised"
-      className={`p-4 flex flex-col gap-3 transition-all ${
+      className={`hud-corners p-4 flex flex-col gap-3 transition-all ${
         isThinking
-          ? 'ring-2 ring-positive/40 shadow-[0_0_20px_-4px_rgba(34,197,94,0.4)]'
-          : ''
+          ? 'animate-glow-pulse !border-positive/60'
+          : 'hover:border-accent/40'
       }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-wider text-fg-subtle">
+          <div className="text-[10px] uppercase tracking-hud text-accent font-sans font-semibold">
             {agent.role.toUpperCase()}
           </div>
-          <div className="mt-1 font-semibold text-fg leading-tight">
+          <div className="mt-1 font-display font-semibold uppercase tracking-wide text-fg leading-tight">
             {ROLE_LABELS[agent.role]}
           </div>
         </div>

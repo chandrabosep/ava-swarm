@@ -23,10 +23,10 @@ export function AllocationChart() {
   const allocations = summary?.allocations ?? [];
 
   return (
-    <Surface className="p-5">
+    <Surface className="hud-corners p-5">
       <div className="flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold">Allocation</h3>
-        <span className="text-[11px] text-fg-subtle uppercase tracking-wider">
+        <h3 className="hud-title text-sm">Allocation</h3>
+        <span className="text-[10px] text-fg-subtle uppercase tracking-hud font-sans">
           {!isConnected
             ? 'connect wallet'
             : positions.isLoading
@@ -41,7 +41,7 @@ export function AllocationChart() {
 
       {/* Stacked bar — keeps us off a chart library for now. */}
       <div
-        className="mt-4 h-2.5 w-full rounded-full overflow-hidden flex bg-bg-hover"
+        className="mt-4 h-2.5 w-full rounded-sm overflow-hidden flex bg-bg-hover/60 border border-border-subtle shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]"
         role="img"
         aria-label="Portfolio allocation by token"
       >
