@@ -30,3 +30,10 @@ dist-ssr
 
 # Local-only scratch
 .local/
+
+# CLI link state (Vercel, Railway)
+.vercel
+.railway
+
+# GitNexus index
+.gitnexus

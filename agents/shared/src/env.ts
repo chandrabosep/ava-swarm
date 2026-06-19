@@ -68,6 +68,16 @@ export const env = {
   groqModel: () => optional('GROQ_MODEL', 'llama-3.3-70b-versatile')!,
   groqBaseUrl: () => optional('GROQ_BASE_URL', 'https://api.groq.com/openai/v1')!,
 
+  // PM asset universe — when set, PM only proposes targets in this list.
+  // CSV of symbols, case-insensitive. Empty/unset = no constraint.
+  pmAssetUniverse: (): string[] => {
+    const raw = optional('PM_ASSET_UNIVERSE', '') ?? '';
+    return raw
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s.length > 0);
+  },
+
   // Hermes — Nous Portal by default, but any OpenAI-compatible endpoint
   // works (self-hosted hermes-agent server, vLLM, etc.).
   hermesApiKey: () => required('HERMES_API_KEY'),

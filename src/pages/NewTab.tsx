@@ -5,6 +5,7 @@ import { AgentStatusPanel } from '@/components/agents/AgentStatusPanel';
 import { SmartAccountCard } from '@/components/swarm/SmartAccountCard';
 import { RiskProfileCard } from '@/components/swarm/RiskProfileCard';
 import { SkillConnectorCard } from '@/components/swarm/SkillConnectorCard';
+import { HermesTestCard } from '@/components/swarm/HermesTestCard';
 import { AxlTelemetryCard } from '@/components/swarm/AxlTelemetryCard';
 
 export default function NewTab() {
@@ -39,6 +40,7 @@ export default function NewTab() {
           <AxlTelemetryCard />
           <AgentStatusPanel />
           <SkillConnectorCard />
+          <HermesTestCard />
         </main>
         <RightRail />
       </div>

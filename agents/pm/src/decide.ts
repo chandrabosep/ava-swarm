@@ -80,6 +80,20 @@ function buildSystemPrompt(profile: RiskProfile): string {
   const stablePct = Math.round(cfg.stableFloor * 100);
   const maxPct = Math.round(cfg.maxToken * 100);
   const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
+  const universe = env.pmAssetUniverse();
+  const hasUniverse = universe.length > 0;
+  const universeRule = hasUniverse
+    ? `HARD CONSTRAINT: targets MUST contain ONLY these symbols and NO others: ${universe.join(', ')}. Any other symbol (e.g. WBTC, UNI, WETH) is FORBIDDEN and will be rejected.`
+    : 'Pick any tokens you think fit the strategy. No fixed universe.';
+  const exampleTargets = hasUniverse
+    ? universe
+        .slice(0, 3)
+        .map((sym, i, arr) => {
+          const w = i === 0 ? 0.7 : (1 - 0.7) / (arr.length - 1 || 1);
+          return `    { "symbol": "${sym}", "weight": ${w.toFixed(2)} }`;
+        })
+        .join(',\n')
+    : `    { "symbol": "ETH",  "weight": 0.60 },\n    { "symbol": "USDC", "weight": 0.30 },\n    { "symbol": "WBTC", "weight": 0.10 }`;
   return `${cfg.persona}
 
 Your job is to propose a target allocation given the user's current
@@ -88,14 +102,12 @@ portfolio. You output JSON ONLY, matching this schema:
 {
   "rationale": "<2-3 sentence explanation>",
   "targets": [
-    { "symbol": "ETH",  "weight": 0.60 },
-    { "symbol": "USDC", "weight": 0.30 },
-    { "symbol": "WBTC", "weight": 0.10 }
+${exampleTargets}
   ]
 }
 
 Rules:
-1. Pick any tokens you think fit the strategy. No fixed universe.
+1. ${universeRule}
 2. Weights sum to exactly 1.0.
 3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
 4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
@@ -114,9 +126,11 @@ export async function decideAllocation(
   const baseSystem = buildSystemPrompt(params.riskProfile ?? 'balanced');
 
   // Skills are agent-role-scoped (see agents/api/src/skills.ts and the
-  // `skills` table). We expose them to whichever LLM PM is using —
-  // Groq and Hermes both speak OpenAI-compatible tool calls.
-  const skills = await loadSkillsForAgent('pm');
+  // `skills` table). Gated on Hermes provider: Groq's hosted models'
+  // tool-calling is unreliable enough that we'd rather skip the skill
+  // loop than hand the model a tool it might mis-call. The skill-driven
+  // flow is the differentiator we ship for Hermes.
+  const skills = llm.provider === 'hermes' ? await loadSkillsForAgent('pm') : [];
 
   const text =
     skills.length > 0
@@ -133,13 +147,18 @@ export async function decideAllocation(
   }
 
   // Renormalize weights to sum to 1.0 (LLM might emit slightly off
-  // sums) and uppercase symbols for downstream matching. No symbol
-  // filtering — PM proposes whatever the LLM picks; Router decides
-  // whether it can resolve an address for that symbol on the target
-  // chain.
+  // sums) and uppercase symbols for downstream matching. When
+  // PM_ASSET_UNIVERSE is configured, hard-filter against it — the
+  // prompt already declares the universe a HARD CONSTRAINT but we
+  // can't trust that an arbitrary model honoured it (especially with
+  // skill-tool injection in scope). Any out-of-universe symbol is
+  // dropped before it reaches Router.
+  const universe = env.pmAssetUniverse();
+  const universeSet = new Set(universe.map((s) => s.toUpperCase()));
   const cleaned = parsed.targets
     .filter((t) => typeof t.symbol === 'string' && t.weight > 0)
-    .map((t) => ({ symbol: t.symbol.toUpperCase(), weight: t.weight }));
+    .map((t) => ({ symbol: t.symbol.toUpperCase(), weight: t.weight }))
+    .filter((t) => universeSet.size === 0 || universeSet.has(t.symbol));
   const sum = cleaned.reduce((s, t) => s + t.weight, 0);
   const targets =
     sum > 0

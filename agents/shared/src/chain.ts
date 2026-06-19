@@ -16,7 +16,6 @@ import {
   parseAbi,
   type Address,
   type Hex,
-  type PublicClient,
 } from 'viem';
 import { mainnet, base, unichain } from 'viem/chains';
 
@@ -25,7 +24,12 @@ import type { SupportedChain } from './types.js';
 
 const VIEM_CHAIN = { mainnet, base, unichain } as const;
 
-export function publicClientFor(chain: SupportedChain): PublicClient {
+// Return type intentionally inferred — viem's exported `PublicClient`
+// alias and the actual return of `createPublicClient(...)` are two
+// different generic instantiations with the same display name (TS
+// error 2719). Letting inference do the work avoids the conflict and
+// gives callers a tighter type.
+export function publicClientFor(chain: SupportedChain) {
   return createPublicClient({
     chain: VIEM_CHAIN[chain],
     transport: http(env.rpc(chain)),

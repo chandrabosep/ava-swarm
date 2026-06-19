@@ -39,6 +39,18 @@ const peerAdverts = new Map<string, OtcAdvert>();
 /** In-memory pool of my own pending adverts, awaiting confirmation. */
 const myAdverts = new Map<string, OtcAdvert & { swap: PairSwap }>();
 
+/**
+ * Replay-protection: every advert id we've seen, plus when its TTL
+ * window expires. Stops a malicious peer from re-broadcasting the same
+ * advertId to trick us into matching the same swap multiple times
+ * across the in-memory pool's natural eviction. Pruned by `prune()`.
+ */
+const seenAdvertIds = new Map<string, number>();
+/** Twice the advert TTL — protect against late re-emits during the
+ *  window where the original is gone but a stale broadcast hasn't
+ *  cleared peer caches. */
+const SEEN_ID_RETENTION_MS = ADVERT_TTL_MS * 2;
+
 let advertCounter = 0;
 const newId = (): string => `otc-${Date.now()}-${++advertCounter}`;
 
@@ -123,6 +135,14 @@ export async function consumeAdverts(ctx: AgentContext): Promise<void> {
     const advert = msg.payload?.payload;
     if (!advert?.advertId) continue;
     if (advert.expiresAt < Date.now()) continue;
+    // Replay guard: every advertId is one-shot for the retention window.
+    // A peer (or upstream relay) re-emitting the same id after a match
+    // is silently dropped instead of being matched again.
+    if (seenAdvertIds.has(advert.advertId)) {
+      ctx.log.warn('otc replay rejected', { advertId: advert.advertId });
+      continue;
+    }
+    seenAdvertIds.set(advert.advertId, Date.now() + SEEN_ID_RETENTION_MS);
     peerAdverts.set(advert.advertId, advert);
 
     // Cross-check: do I have a matching pending of my own?
@@ -146,8 +166,7 @@ export async function consumeAdverts(ctx: AgentContext): Promise<void> {
     await ctx.axl
       .send({
         to: msg.from,
-        kind: TOPICS.otcConfirm,
-        payload: reply,
+        data: JSON.stringify({ kind: TOPICS.otcConfirm, payload: reply }),
       })
       .catch((err) =>
         ctx.log.warn('otc confirm send failed', {
@@ -197,7 +216,16 @@ export async function settleMatch(
   const settlementId = `0x${'OTC'.padEnd(64, '0').slice(0, 64)}` as `0x${string}`;
   const matchedAt = new Date().toISOString();
 
-  // 1. Persist the routed intent on our side, status='otc-settled'.
+  // 1. Persist the routed intent on our side, status='executed'.
+  //
+  // HONESTY MARKER: until OTC_PERMIT2_MEDIATOR is wired, settlement is
+  // a coordination-only demo — no atomic transferFrom actually happens.
+  // We mark `demoSettlement: true` on the payload so the dashboard,
+  // accounting code, and downstream consumers can tell a real on-chain
+  // settlement apart from an OTC mesh-only handshake. PM/Router behaviour
+  // is unchanged so existing demo flows still light up.
+  const demoSettlement =
+    (process.env.OTC_PERMIT2_MEDIATOR ?? '').toLowerCase().length === 0;
   const row = await db().intent.create({
     data: {
       walletAddress: ourWallet,
@@ -217,6 +245,10 @@ export async function settleMatch(
           peerWallet: peer.walletAddress,
           savedUsd,
           settlementId,
+          demoSettlement,
+          note: demoSettlement
+            ? 'off-chain handshake only — set OTC_PERMIT2_MEDIATOR to enable atomic Permit2 settlement'
+            : undefined,
         },
       } as unknown as object,
       // OTC matches are recorded as `executed` (true terminal success)
@@ -328,5 +360,8 @@ function prune(): void {
   }
   for (const [id, advert] of myAdverts) {
     if (advert.expiresAt < now) myAdverts.delete(id);
+  }
+  for (const [id, expiresAt] of seenAdvertIds) {
+    if (expiresAt < now) seenAdvertIds.delete(id);
   }
 }

@@ -75,7 +75,7 @@ export function useSwarmStatus() {
           sessions: [],
           agents: FALLBACK_AGENTS,
           intents: [],
-        };
+        } satisfies SwarmStatus;
       }
       const res = await fetch(
         `${AGENTS_API_URL}/api/status/${walletAddress.toLowerCase()}`,
