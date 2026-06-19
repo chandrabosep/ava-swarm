@@ -108,6 +108,29 @@ model Event {
   @@map("events")
 }
 
+/// Global swarm-wide settings. Single-row table keyed by id='global'.
+/// Right now this only holds the Hermes overrides — paste an API key /
+/// model / base URL / skill text from the extension UI and PM picks them
+/// up on the next tick, no env var or restart required.
+///
+/// API keys are stored in plaintext — same trust level as agents/.env on
+/// the server. Don't deploy this without rotating to a KMS-backed secret
+/// store if you take real money.
+model SwarmSettings {
+  id            String   @id @default("global")
+  hermesEnabled Boolean  @default(false) @map("hermes_enabled")
+  hermesApiKey  String?  @map("hermes_api_key")
+  hermesModel   String?  @map("hermes_model")
+  hermesBaseUrl String?  @map("hermes_base_url")
+  /// Optional free-form text appended to PM's system prompt when Hermes
+  /// is active. Hermes Agent's actual `skills/*.py` won't run inside the
+  /// swarm — this is the "what should the model also consider" slot.
+  hermesSkill   String?  @map("hermes_skill")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("swarm_settings")
+}
+
 model AgentState {
   agent       AgentRole
   safeAddress String    @map("safe_address")

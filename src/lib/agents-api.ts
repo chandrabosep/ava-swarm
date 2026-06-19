@@ -75,3 +75,56 @@ export async function setCustomConfig(
     throw new Error(`setCustomConfig ${res.status}: ${text || res.statusText}`);
   }
 }
+
+/** What the GET /api/settings/hermes endpoint returns. */
+export interface HermesSettings {
+  enabled: boolean;
+  /** Server only confirms presence — never returns the full key. */
+  hasKey: boolean;
+  /** Last 4 chars of the saved key, for "is this the one I pasted?" recognition. */
+  keyTail: string | null;
+  model: string | null;
+  baseUrl: string | null;
+  skill: string | null;
+  updatedAt: string | null;
+}
+
+export async function getHermesSettings(): Promise<HermesSettings> {
+  const res = await fetch(`${AGENTS_API_URL}/api/settings/hermes`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`getHermesSettings ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as HermesSettings;
+}
+
+/**
+ * Update Hermes settings. Field semantics:
+ *   - omitted / undefined → leave existing value alone
+ *   - explicit `null`     → clear the stored value
+ *   - string              → overwrite
+ *   - `clearKey: true`    → wipe the API key (alias for `apiKey: null`)
+ */
+export interface HermesSettingsPatch {
+  enabled?: boolean;
+  apiKey?: string | null;
+  model?: string | null;
+  baseUrl?: string | null;
+  skill?: string | null;
+  clearKey?: boolean;
+}
+
+export async function setHermesSettings(
+  patch: HermesSettingsPatch,
+): Promise<HermesSettings> {
+  const res = await fetch(`${AGENTS_API_URL}/api/settings/hermes`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`setHermesSettings ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as HermesSettings;
+}

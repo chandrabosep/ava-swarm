@@ -328,6 +328,137 @@ app.get('/api/status/:safeAddress', async (req, res) => {
   }
 });
 
+/**
+ * Hermes / LLM provider override.
+ *
+ * One global settings row — paste an API key + model + (optional) skill
+ * text from the extension and PM picks it up on the next tick instead of
+ * the env-var Groq defaults. We never echo the full API key back to the
+ * UI; once it's saved the GET response only reports `hasKey: true` and a
+ * masked tail. To rotate, paste a new key.
+ */
+app.get('/api/settings/hermes', async (_req, res) => {
+  try {
+    const row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
+    return res.json({
+      enabled: row?.hermesEnabled ?? false,
+      hasKey: !!row?.hermesApiKey,
+      // Only the last 4 chars are shown — enough to recognize "is this the
+      // key I pasted earlier?" without exposing it on the wire on every
+      // page load.
+      keyTail: row?.hermesApiKey ? row.hermesApiKey.slice(-4) : null,
+      model: row?.hermesModel ?? null,
+      baseUrl: row?.hermesBaseUrl ?? null,
+      skill: row?.hermesSkill ?? null,
+      updatedAt: row?.updatedAt ?? null,
+    });
+  } catch (err) {
+    log.error('get hermes settings failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+interface HermesSettingsPutBody {
+  enabled?: boolean;
+  /** Send `null` (or omit + clearKey:true) to wipe the stored key. */
+  apiKey?: string | null;
+  model?: string | null;
+  baseUrl?: string | null;
+  skill?: string | null;
+  /** Explicit "delete the saved key" flag, since omission means "leave alone". */
+  clearKey?: boolean;
+}
+
+app.put('/api/settings/hermes', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as HermesSettingsPutBody;
+
+    const existing =
+      (await db().swarmSettings.findUnique({ where: { id: 'global' } })) ?? null;
+
+    // Diff semantics: undefined = leave alone, null = clear, string = overwrite.
+    // For the API key specifically we accept either `apiKey: null` or
+    // `clearKey: true` so the UI doesn't have to know the convention.
+    //
+    // Special case: if the caller is wiping the key but didn't explicitly
+    // touch `enabled`, force it off. Otherwise we'd land in the
+    // enabled=true / no-key state and reject their own request below.
+    const isClearingKey = body.clearKey === true || body.apiKey === null;
+    const next = {
+      hermesEnabled:
+        typeof body.enabled === 'boolean'
+          ? body.enabled
+          : isClearingKey
+            ? false
+            : existing?.hermesEnabled ?? false,
+      hermesApiKey:
+        body.clearKey || body.apiKey === null
+          ? null
+          : typeof body.apiKey === 'string' && body.apiKey.length > 0
+            ? body.apiKey
+            : (existing?.hermesApiKey ?? null),
+      hermesModel:
+        body.model === null
+          ? null
+          : typeof body.model === 'string'
+            ? body.model
+            : (existing?.hermesModel ?? null),
+      hermesBaseUrl:
+        body.baseUrl === null
+          ? null
+          : typeof body.baseUrl === 'string'
+            ? body.baseUrl
+            : (existing?.hermesBaseUrl ?? null),
+      hermesSkill:
+        body.skill === null
+          ? null
+          : typeof body.skill === 'string'
+            ? body.skill
+            : (existing?.hermesSkill ?? null),
+    };
+
+    // Refuse to flip enabled=true with no key on file — surface this
+    // early so the UI can render "paste a key first" rather than letting
+    // PM crash on the next tick.
+    if (next.hermesEnabled && !next.hermesApiKey) {
+      return res
+        .status(400)
+        .json({ error: 'cannot enable Hermes without an API key' });
+    }
+
+    const saved = await db().swarmSettings.upsert({
+      where: { id: 'global' },
+      update: next,
+      create: { id: 'global', ...next },
+    });
+
+    log.info('hermes settings updated', {
+      enabled: saved.hermesEnabled,
+      hasKey: !!saved.hermesApiKey,
+      model: saved.hermesModel,
+      baseUrl: saved.hermesBaseUrl,
+      skillLen: saved.hermesSkill?.length ?? 0,
+    });
+
+    return res.json({
+      enabled: saved.hermesEnabled,
+      hasKey: !!saved.hermesApiKey,
+      keyTail: saved.hermesApiKey ? saved.hermesApiKey.slice(-4) : null,
+      model: saved.hermesModel,
+      baseUrl: saved.hermesBaseUrl,
+      skill: saved.hermesSkill,
+      updatedAt: saved.updatedAt,
+    });
+  } catch (err) {
+    log.error('update hermes settings failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
 app.listen(PORT, () => {
   log.info('api up', { port: PORT, allowedOrigins: ALLOWED_ORIGINS });
 });
