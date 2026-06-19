@@ -1,9 +1,10 @@
 import { useAccount } from 'wagmi';
-import { useQueryClient } from '@tanstack/react-query';
+import { useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { Surface } from '@/components/common/Surface';
 import { Badge } from '@/components/common/Badge';
 import { Button } from '@/components/common/Button';
 import {
+  useFungiblePositions,
   useWalletPnl,
   useWalletPortfolio,
 } from '@/hooks/usePortfolio';
@@ -14,7 +15,21 @@ export function SummaryCards() {
   const { isConnected } = useAccount();
   const portfolio = useWalletPortfolio();
   const pnl = useWalletPnl();
+  // Ensure positions query is mounted so refresh hits the allocation
+  // chart's data source even when only this card is visible.
+  useFungiblePositions();
   const qc = useQueryClient();
+  // Aggregate fetching state across all sources so the spinner reflects
+  // the slowest one — refreshAll kicks off ~5 queries and the user
+  // expects ↻ to stay spinning until they're all back.
+  const fetchingZerion = useIsFetching({ queryKey: ['zerion'] });
+  const fetchingAlchemy = useIsFetching({ queryKey: ['alchemy'] });
+  const fetchingSwarm = useIsFetching({ queryKey: ['swarm-status'] });
+  const anyFetching =
+    portfolio.isFetching ||
+    fetchingZerion > 0 ||
+    fetchingAlchemy > 0 ||
+    fetchingSwarm > 0;
 
   const attrs = portfolio.data?.data.attributes;
   const totalValueUsd = attrs?.total.positions ?? 0;
@@ -30,8 +45,15 @@ export function SummaryCards() {
     (portfolio.error instanceof ZerionError && portfolio.error.status === 429) ||
     (pnl.error instanceof ZerionError && pnl.error.status === 429);
 
+  // Invalidate everything that contributes to the portfolio + allocation
+  // view: portfolio totals, fungible positions (allocation chart), PnL,
+  // transactions, AND the swarm-status feed that drives the agent
+  // activity stream. Both providers (zerion / alchemy) are covered so
+  // the refresh works the same in mainnet + testnet builds.
   const refreshAll = () => {
     qc.invalidateQueries({ queryKey: ['zerion'] });
+    qc.invalidateQueries({ queryKey: ['alchemy'] });
+    qc.invalidateQueries({ queryKey: ['swarm-status'] });
   };
 
   return (
@@ -53,10 +75,10 @@ export function SummaryCards() {
               size="sm"
               variant="ghost"
               onClick={refreshAll}
-              disabled={!isConnected || portfolio.isFetching}
-              title="Refresh portfolio"
+              disabled={!isConnected || anyFetching}
+              title="Refresh portfolio, allocation & agent activity"
             >
-              {portfolio.isFetching ? '…' : '↻'}
+              {anyFetching ? '…' : '↻'}
             </Button>
           </div>
           <div className="mt-2 text-3xl font-semibold tracking-tight">
