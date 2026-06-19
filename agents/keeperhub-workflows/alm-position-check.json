@@ -1,0 +1,28 @@
+{
+  "name": "swarm.alm-position-check",
+  "description": "Cron-driven ALM v4 LP position scan. Every 15 minutes, ALM re-reads the user's Uniswap v4 LP positions, classifies them (in-range / drifting / out-of-range), and emits a swarm.alm.rebalance intent on drift. Router consumes the rebalance and ALM tracks the receipt.",
+  "trigger": {
+    "type": "cron",
+    "schedule": "*/15 * * * *",
+    "timezone": "UTC"
+  },
+  "steps": [
+    {
+      "id": "alm-scan",
+      "type": "webhook",
+      "method": "POST",
+      "url": "${AGENTS_API_URL}/internal/alm/scan-positions",
+      "headers": {
+        "x-internal-key": "${SWARM_INTERNAL_KEY}"
+      },
+      "body": {
+        "source": "kh.alm-position-check",
+        "ts": "${now}"
+      },
+      "retry": {
+        "maxAttempts": 3,
+        "backoffSeconds": 60
+      }
+    }
+  ]
+}

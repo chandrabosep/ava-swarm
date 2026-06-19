@@ -1,119 +1,124 @@
-// Hermes-style skill runtime — the bridge between the Skill Connector
-// (UI paste of SKILL.md + API key, persisted in `swarm_settings`) and the
-// PM tick that actually drives the LLM.
+// PM-side skill runtime — pulls installed skills out of the `skills`
+// table at tick time and exposes them to the LLM as a single tool.
 //
-// Today the Skill Connector is storage-only. This module makes it
-// functional:
+// Persistence + register/heartbeat live in agents/api/src/skills.ts. This
+// file is the read-side runtime that bridges the DB to the LLM tool loop:
 //
-//   1. loadInstalledSkill()  — pull the row out of Postgres, parse a
-//      host allowlist out of the markdown body so we know which domains
-//      the skill is allowed to talk to.
-//   2. callSkillApiTool()    — an OpenAI tool definition the model can
-//      call to hit the skill's HTTP API. Server-side proxied so the
-//      stored API key never enters an LLM prompt.
-//   3. invokeCallSkillApi()  — execute one tool call. Allowlist-checked
-//      against the parsed hosts, attaches the API key as a Bearer token,
-//      bounds the response size so a chatty endpoint can't blow context.
+//   1. loadSkillsForAgent('pm') → list of usable skills (those that
+//      have an api key and at least one allowed host).
+//   2. buildSkillTool(skills)   → one OpenAI tool definition. The model
+//      picks which skill to hit via a `skill` argument (one of the
+//      installed skill names). One tool > N tools because LLMs choke on
+//      tool inflation.
+//   3. invokeCallSkillApi(skills, rawArgs) → executes one tool call.
+//      Looks up the named skill, validates the URL host against that
+//      skill's allowlist, attaches the skill's stored Bearer key
+//      server-side, returns a JSON-safe result the model can react to.
 //
-// Why allowlist hosts? The skill markdown is user-pasted, not vetted.
-// We don't want a malicious skill to convince the model to POST the
-// stored API key (or anything else) to attacker-controlled infra. We
-// extract https URLs from the SKILL.md once at load time and refuse any
-// tool call that targets a host outside that set.
+// Why allowlist hosts at runtime when the api server already verified
+// them at install time? Defense in depth: the row could be edited
+// out-of-band (DB tooling, future migrations). Re-checking on every
+// outbound request keeps the security boundary close to the action.
 
 import type OpenAI from 'openai';
 
-import { db } from '@swarm/shared';
+import { db, type AgentRole } from '@swarm/shared';
 
 const MAX_TOOL_RESPONSE_CHARS = 4000;
 const TOOL_TIMEOUT_MS = 15_000;
 
 export interface InstalledSkill {
-  name: string | null;
+  id: string;
+  name: string;
   version: string | null;
   description: string | null;
-  /** Full SKILL.md content (frontmatter + body). */
+  /** Full SKILL.md text — injected into the system prompt. */
   content: string;
-  /** Stored API key, or null. Service-scoped — only ever sent to allowedHosts. */
-  apiKey: string | null;
-  /** Hosts the model is allowed to call_skill_api against. Derived from the SKILL.md body. */
+  /** Hosts the skill is allowed to call. */
   allowedHosts: string[];
+  /** Server-only; used to attach Authorization on outbound calls. */
+  apiKey: string;
+  apiBase: string | null;
+  claimStatus: string;
 }
 
 /**
- * Load the single installed skill (id=`global`) from Postgres. Returns
- * null when no skill is installed — callers fall back to the standard
- * skill-less prompt path.
+ * Load every skill that's installed for `role`, has an apiKey, and lists
+ * at least one callable host. Skills without those are dropped from the
+ * tool surface — the LLM can't usefully call something we have no creds
+ * for or no destination on.
  */
-export async function loadInstalledSkill(): Promise<InstalledSkill | null> {
-  const row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
-  if (!row?.skillContent) return null;
-
-  return {
-    name: row.skillName,
-    version: row.skillVersion,
-    description: row.skillDescription,
-    content: row.skillContent,
-    apiKey: row.skillApiKey,
-    allowedHosts: extractHosts(row.skillContent),
-  };
-}
-
-/**
- * Find every distinct https host referenced in the skill markdown. The
- * model can only invoke `call_skill_api` against URLs whose host is in
- * this set, so a skill that doesn't mention any host can't drive
- * outbound traffic at all.
- */
-export function extractHosts(content: string): string[] {
-  const out = new Set<string>();
-  const re = /https?:\/\/([a-zA-Z0-9.\-]+)(?::\d+)?(?:\/|\b)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content))) {
-    const host = m[1].toLowerCase();
-    // Skip example/placeholder hosts that often appear in docs.
-    if (host === 'example.com' || host === 'localhost') continue;
-    out.add(host);
+export async function loadSkillsForAgent(role: AgentRole): Promise<InstalledSkill[]> {
+  const rows = await db().skill.findMany({
+    where: { agentRole: role, apiKey: { not: null } },
+    orderBy: { installedAt: 'asc' },
+  });
+  const usable: InstalledSkill[] = [];
+  for (const row of rows) {
+    if (!row.apiKey) continue;
+    const allowedHosts = row.allowedHosts.split(',').filter(Boolean);
+    if (allowedHosts.length === 0) continue;
+    usable.push({
+      id: row.id,
+      name: row.name,
+      version: row.version,
+      description: row.description,
+      content: row.content,
+      allowedHosts,
+      apiKey: row.apiKey,
+      apiBase: row.apiBase,
+      claimStatus: row.claimStatus,
+    });
   }
-  return [...out];
+  return usable;
 }
 
 /**
- * The single tool definition we expose to a Hermes-driven PM tick.
- * Description is intentionally explicit about the allowlist so the
- * model doesn't waste turns trying URLs that will be rejected.
+ * One tool, multi-skill. The model selects via the `skill` arg. Putting
+ * the skill list directly in the description is more reliable than
+ * minting one tool per skill — Hermes 4 (and Llama 3.3) handle a single
+ * well-described tool better than 5 thinly-described ones.
  */
-export function callSkillApiTool(
-  skill: InstalledSkill,
+export function buildSkillTool(
+  skills: InstalledSkill[],
 ): OpenAI.Chat.Completions.ChatCompletionTool {
-  const hostList =
-    skill.allowedHosts.length > 0
-      ? skill.allowedHosts.join(', ')
-      : '(none — skill listed no callable hosts)';
+  const skillList = skills
+    .map(
+      (s) =>
+        `  - "${s.name}"${s.version ? ` v${s.version}` : ''}: ${s.description ?? '(no description)'}\n    allowed hosts: ${s.allowedHosts.join(', ')}\n    api base: ${s.apiBase ?? '(none)'}\n    claim: ${s.claimStatus}`,
+    )
+    .join('\n');
+  const validNames = skills.map((s) => s.name);
   return {
     type: 'function',
     function: {
       name: 'call_skill_api',
       description:
-        `Invoke an HTTP endpoint on the installed skill (${skill.name ?? 'unnamed'}` +
-        `${skill.version ? ` v${skill.version}` : ''}). The skill's API key is ` +
-        `attached server-side as a Bearer token — do not put credentials in any ` +
-        `argument. Requests are rejected unless the URL host is one of: ${hostList}. ` +
-        `Use this to fetch fresh context that helps you decide the allocation ` +
-        `(e.g. signals, news, on-chain data the skill exposes).`,
+        `Invoke an HTTP endpoint on one of the installed skills. The skill's ` +
+        `API key is attached server-side as a Bearer token — never put ` +
+        `credentials in any argument. Requests are rejected unless the URL ` +
+        `host is on the chosen skill's allowlist.\n\n` +
+        `Installed skills:\n${skillList}\n\n` +
+        `Use this to fetch live context that helps you decide your next ` +
+        `action (e.g. social signals, market commentary, data feeds the ` +
+        `skill exposes).`,
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          skill: {
+            type: 'string',
+            enum: validNames,
+            description: 'Name of the installed skill to call.',
+          },
           method: {
             type: 'string',
             enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-            description: 'HTTP method.',
           },
           url: {
             type: 'string',
             description:
-              'Full https:// URL on one of the allowed hosts. Path/query inline.',
+              "Full https:// URL on one of the chosen skill's allowed hosts.",
           },
           body: {
             type: 'object',
@@ -123,17 +128,18 @@ export function callSkillApiTool(
           headers: {
             type: 'object',
             description:
-              'Extra request headers. Authorization is added automatically — do not set it here.',
+              'Extra request headers. Authorization is added automatically.',
             additionalProperties: { type: 'string' },
           },
         },
-        required: ['method', 'url'],
+        required: ['skill', 'method', 'url'],
       },
     },
   };
 }
 
 interface CallSkillApiArgs {
+  skill?: string;
   method?: string;
   url?: string;
   body?: unknown;
@@ -143,22 +149,19 @@ interface CallSkillApiArgs {
 export interface SkillCallResult {
   ok: boolean;
   status?: number;
-  /** Body, truncated to MAX_TOOL_RESPONSE_CHARS. */
   body?: string;
-  /** Set when the call short-circuited before/after the request. */
   error?: string;
   url?: string;
   durationMs?: number;
+  skill?: string;
 }
 
 /**
- * Execute one `call_skill_api` tool call. Never throws — always returns
- * a structured result the model can react to (the model is much better
- * at recovering from a JSON error payload than from a raised exception
- * in the tool loop).
+ * Execute one `call_skill_api` tool call. Never throws — returns a
+ * structured result so the LLM can recover from any failure mode.
  */
 export async function invokeCallSkillApi(
-  skill: InstalledSkill,
+  skills: InstalledSkill[],
   rawArgs: string,
 ): Promise<SkillCallResult> {
   let args: CallSkillApiArgs;
@@ -168,23 +171,37 @@ export async function invokeCallSkillApi(
     return { ok: false, error: 'tool args were not valid JSON' };
   }
 
+  const skillName = typeof args.skill === 'string' ? args.skill : '';
+  const skill = skills.find((s) => s.name === skillName);
+  if (!skill) {
+    return {
+      ok: false,
+      error: `unknown skill "${skillName}". installed: [${skills.map((s) => s.name).join(', ')}]`,
+    };
+  }
+
   const method = (args.method ?? 'GET').toUpperCase();
   const url = typeof args.url === 'string' ? args.url : '';
-  if (!url) return { ok: false, error: 'url is required' };
+  if (!url) return { ok: false, skill: skill.name, error: 'url is required' };
 
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return { ok: false, error: `not a valid URL: ${url}` };
+    return { ok: false, skill: skill.name, error: `not a valid URL: ${url}` };
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    return { ok: false, error: `unsupported protocol: ${parsed.protocol}` };
+    return {
+      ok: false,
+      skill: skill.name,
+      error: `unsupported protocol: ${parsed.protocol}`,
+    };
   }
   const host = parsed.hostname.toLowerCase();
   if (!skill.allowedHosts.includes(host)) {
     return {
       ok: false,
+      skill: skill.name,
       error: `host ${host} not on skill allowlist: [${skill.allowedHosts.join(', ')}]`,
     };
   }
@@ -193,11 +210,10 @@ export async function invokeCallSkillApi(
     Accept: 'application/json',
     ...(args.headers ?? {}),
   };
-  // Strip any Authorization the model tried to set — we own that header.
   for (const k of Object.keys(headers)) {
     if (k.toLowerCase() === 'authorization') delete headers[k];
   }
-  if (skill.apiKey) headers['Authorization'] = `Bearer ${skill.apiKey}`;
+  headers['Authorization'] = `Bearer ${skill.apiKey}`;
 
   const init: RequestInit = { method, headers };
   if (args.body !== undefined && method !== 'GET' && method !== 'DELETE') {
@@ -222,10 +238,12 @@ export async function invokeCallSkillApi(
           : text,
       url,
       durationMs: Date.now() - started,
+      skill: skill.name,
     };
   } catch (err) {
     return {
       ok: false,
+      skill: skill.name,
       error:
         err instanceof Error
           ? err.name === 'AbortError'
@@ -241,38 +259,32 @@ export async function invokeCallSkillApi(
 }
 
 /**
- * Build the system-prompt section that introduces the skill to the model.
- * Kept as its own function so decide.ts can compose it cleanly.
+ * Build the system-prompt section that introduces all installed skills
+ * to the LLM. Each skill gets its full SKILL.md (truncated) so the
+ * model has the docs in-context.
  */
-export function buildSkillSystemSection(skill: InstalledSkill): string {
-  const header =
-    skill.name && skill.version
-      ? `${skill.name} v${skill.version}`
-      : (skill.name ?? 'unnamed skill');
-  const allow =
-    skill.allowedHosts.length > 0
-      ? skill.allowedHosts.join(', ')
-      : '(skill listed no hosts — call_skill_api will reject everything)';
+export function buildSkillsSystemSection(skills: InstalledSkill[]): string {
+  if (skills.length === 0) return '';
+  const sections = skills.map((s) => {
+    const header = s.name && s.version ? `${s.name} v${s.version}` : s.name;
+    const truncated =
+      s.content.length > 16_000
+        ? s.content.slice(0, 16_000) + '\n…[skill body truncated]'
+        : s.content;
+    return `### ${header}
+Description: ${s.description ?? '(none)'}
+Allowed hosts: ${s.allowedHosts.join(', ')}
+Claim status: ${s.claimStatus}
 
-  // Cap content at 24KB — Hermes context is roomy but we're not paying
-  // to ship megabytes of skill markdown every tick.
-  const content =
-    skill.content.length > 24_000
-      ? skill.content.slice(0, 24_000) + '\n…[skill body truncated]'
-      : skill.content;
+--- BEGIN ${s.name}/SKILL.md ---
+${truncated}
+--- END ${s.name}/SKILL.md ---`;
+  });
+  return `External skills are installed and available via the \`call_skill_api\` tool.
 
-  return `An external skill is installed and available to you.
+You may call those endpoints to fetch fresh context before making your
+decision. The skill's API key is attached server-side; never put
+credentials in tool arguments.
 
-Skill: ${header}
-Description: ${skill.description ?? '(none)'}
-Allowed hosts: ${allow}
-
-You may call the \`call_skill_api\` tool to fetch fresh context from this
-skill before making your allocation decision. The skill's own API key is
-attached server-side; never put credentials in tool arguments. After any
-tool calls, return ONLY the final allocation JSON — no commentary.
-
---- BEGIN SKILL.md ---
-${content}
---- END SKILL.md ---`;
+${sections.join('\n\n')}`;
 }

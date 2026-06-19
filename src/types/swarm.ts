@@ -1,14 +1,15 @@
 // Smart-account / session-key types for the agent swarm.
 //
 // The model:
-//   - SmartAccount      = the Safe (one deterministic address, deployed
-//                          per-chain on demand)
+//   - SmartAccount      = the user's EOA (under EIP-7702 the EOA itself
+//                          acts as a smart account; same address on every
+//                          chain, no deploy required)
 //   - SessionKey        = a delegated keypair an agent uses to sign UserOps
-//   - PermissionPolicy  = the rules onchain Smart Sessions enforces against
+//   - PermissionPolicy  = the rules the delegation enforces against
 //                          each session key
 //
-// State is layered per-chain because deployment + module install + grants
-// happen separately on each chain (even though the address is the same).
+// State is layered per-chain because the delegation grant happens
+// separately on each chain (even though the address is the same).
 
 import type { Address, Hex } from 'viem';
 
@@ -33,31 +34,30 @@ export const CHAIN_ID: Record<SupportedChain, number> = {
 
 export interface SmartAccount {
   /**
-   * Deterministic address — identical on every supported chain. Computed
-   * via the canonical Safe proxy factory + same owners + same salt + same
-   * 4337 fallback handler. See src/lib/safe/predict.ts.
+   * The account address — under EIP-7702 this is just the user's EOA,
+   * identical on every supported chain. No factory, no deployment.
    */
   address: Address;
-  /** Owners (EOAs) authorized to sign on the Safe directly. */
+  /** Owners (EOAs) authorized to sign directly. Always [address] in 7702 mode. */
   owners: Address[];
-  /** k-of-n multisig threshold. Starts at 1; user can promote later. */
+  /** k-of-n multisig threshold. Always 1 in EIP-7702 mode. */
   threshold: number;
-  /** Salt nonce used at deploy time — needs to match for cross-chain parity. */
+  /** Salt nonce — kept for legacy persistence compatibility. */
   saltNonce: string;
-  /** Per-chain deployment + module state. */
+  /** Per-chain delegation state. */
   chains: Partial<Record<SupportedChain, ChainDeployment>>;
 }
 
 export interface ChainDeployment {
   chain: SupportedChain;
   chainId: number;
-  /** True once the Safe contract exists onchain. */
+  /** True once the EIP-7702 delegation has been authorized on this chain. */
   deployed: boolean;
-  /** True once the Smart Sessions validator module is installed. */
+  /** True once the delegation policy is registered onchain. */
   smartSessionsInstalled: boolean;
-  /** UserOp hash that performed the deploy + module install bundle. */
+  /** Tx hash of the delegation grant. */
   deploymentTxHash?: Hex;
-  /** Block number where the deployment was mined, for change tracking. */
+  /** Block number where the delegation was mined, for change tracking. */
   deployedAtBlock?: bigint;
 }
 

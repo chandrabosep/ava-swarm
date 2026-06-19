@@ -1,0 +1,43 @@
+{
+  "name": "swarm.treasury-report",
+  "description": "Daily 24h digest. Collates per-wallet PnL, intent counts, OTC savings, and Uniswap volume into a markdown summary, posts to a configured webhook (Telegram, email, Slack) for the user. Runs at 00:00 UTC daily.",
+  "trigger": {
+    "type": "cron",
+    "schedule": "0 0 * * *",
+    "timezone": "UTC"
+  },
+  "steps": [
+    {
+      "id": "compile-report",
+      "type": "webhook",
+      "method": "POST",
+      "url": "${AGENTS_API_URL}/internal/report/daily",
+      "headers": {
+        "x-internal-key": "${SWARM_INTERNAL_KEY}"
+      },
+      "body": {
+        "source": "kh.treasury-report",
+        "windowHours": 24,
+        "ts": "${now}"
+      },
+      "retry": {
+        "maxAttempts": 3,
+        "backoffSeconds": 120
+      }
+    },
+    {
+      "id": "deliver",
+      "type": "webhook",
+      "method": "POST",
+      "url": "${REPORT_DELIVERY_WEBHOOK}",
+      "body": {
+        "source": "swarm-treasury-report",
+        "report": "${steps.compile-report.body}"
+      },
+      "retry": {
+        "maxAttempts": 5,
+        "backoffSeconds": 30
+      }
+    }
+  ]
+}

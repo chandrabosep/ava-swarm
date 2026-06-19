@@ -6,7 +6,7 @@
 //   aggressive    — growth tilt, low stables, 5-min cadence
 //   degen         — no floor, max momentum, 1-min cadence
 //
-// Update lands in the agents DB via PUT /api/users/:safe/profile and
+// Update lands in the agents DB via PUT /api/users/:wallet/profile and
 // the next PM tick reads it.
 
 import { useState } from 'react';
@@ -74,11 +74,11 @@ export function RiskProfileCard() {
   if (!owner) return null;
 
   return (
-    <Surface className="p-5 space-y-4">
+    <Surface className="hud-corners p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-sm font-semibold tracking-tight">Risk profile</h2>
-          <p className="mt-1 text-xs text-fg-muted leading-relaxed max-w-xl">
+          <h2 className="hud-title text-sm">Risk Profile</h2>
+          <p className="mt-2 text-xs text-fg-muted leading-relaxed max-w-xl">
             Drives PM's prompt, rebalance threshold, and tick cadence. Switch
             anytime — agents pick up the new profile on the next tick.
           </p>
@@ -96,16 +96,16 @@ export function RiskProfileCard() {
               onClick={() => mutation.mutate(p.key)}
               disabled={mutation.isPending || active}
               className={[
-                'text-left rounded-md border p-3 transition-colors',
+                'text-left rounded-sm border p-3 transition-all',
                 active
-                  ? 'border-accent bg-accent/10'
-                  : 'border-border-subtle hover:border-border bg-bg-raised',
+                  ? 'border-accent bg-accent/10 shadow-[0_0_14px_-2px_rgba(0,229,255,0.55)]'
+                  : 'border-border-subtle hover:border-accent/50 hover:shadow-[0_0_10px_-2px_rgba(0,229,255,0.35)] bg-bg-raised',
                 mutation.isPending && !active ? 'opacity-50' : '',
               ].join(' ')}
             >
               <div className="flex items-center justify-between">
                 <span
-                  className={`text-sm font-medium ${active ? 'text-accent' : 'text-fg'}`}
+                  className={`text-sm font-display font-semibold uppercase tracking-wide ${active ? 'text-accent' : 'text-fg'}`}
                 >
                   {p.label}
                 </span>

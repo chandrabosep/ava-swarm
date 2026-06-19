@@ -1,8 +1,8 @@
 // Delegate Swarm — EIP-7702 / Calibur-style.
 //
-// Replaces the old Safe + Smart Sessions activation flow. Funds never
-// leave the user's EOA. Instead the EOA delegates scoped authority to
-// the agents via a single EIP-712 typed-data signature.
+// The EOA *is* the account: funds never leave the user's wallet, and
+// instead the EOA delegates scoped authority to the agents via a
+// single EIP-712 typed-data signature.
 //
 // Flow:
 //   1. Build the DelegationPayload (owner, agent service addresses,
@@ -80,7 +80,7 @@ export function useDelegateSwarm() {
       for (const agent of ALL_AGENTS) {
         setStage({ type: 'registering', agent });
         await registerSession({
-          safeAddress: owner, // EOA *is* the account in 7702 mode.
+          walletAddress: owner, // EOA *is* the account in 7702 mode.
           ownerEoa: owner,
           agent,
           sessionAddress: SWARM_SERVICE_ADDRESSES[agent],

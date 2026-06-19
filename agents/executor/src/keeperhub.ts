@@ -23,27 +23,49 @@ import {
   getEthBalance,
   getKeeperhubWalletAddress,
   WETH_ADDRESS as WETH_ADDR,
-  SWAP_ROUTER_02,
+  swapRouterFor,
   type ChainName as OnchainChainName,
 } from './onchain.js';
 
 // KeeperHub's `uniswap/swap-exact-input` action wants `network` as a
-// chain id *string* (not a friendly name).
+// chain id *string*. execute_contract_call / execute_transfer take a
+// friendly network identifier instead — see KH_NETWORK_IDENT below.
 const NETWORK_CHAIN_ID = {
   mainnet: '1',
   base: '8453',
   unichain: '130',
+  sepolia: '11155111',
+  'base-sepolia': '84532',
 } as const;
 
 export type ChainName = keyof typeof NETWORK_CHAIN_ID;
 
+// Friendly network identifier KH expects in execute_contract_call /
+// execute_transfer. Authoritative list from KH's own error message:
+//   "Supported: mainnet, eth-mainnet, ethereum-mainnet, ethereum,
+//    sepolia, eth-sepolia, sepolia-testnet,
+//    base, base-mainnet, base-sepolia, base-testnet,
+//    tempo-testnet, tempo, tempo-mainnet,
+//    solana, solana-mainnet, solana-devnet, solana-testnet
+//    or numeric chain IDs"
+// Override with KH_NETWORK_<chain> if KH renames one.
+const KH_NETWORK_IDENT: Record<ChainName, string> = {
+  mainnet: process.env.KH_NETWORK_MAINNET ?? 'ethereum',
+  base: process.env.KH_NETWORK_BASE ?? 'base',
+  unichain: process.env.KH_NETWORK_UNICHAIN ?? 'unichain',
+  sepolia: process.env.KH_NETWORK_SEPOLIA ?? 'sepolia',
+  'base-sepolia': process.env.KH_NETWORK_BASE_SEPOLIA ?? 'base-testnet',
+};
+
 // WETH addresses per chain — Uniswap V3 single-hop swaps don't accept
 // native ETH, so we substitute WETH. The KeeperHub wallet must hold
-// WETH (or have the wrap step happen elsewhere).
+// WETH (or have the wrap step happen via WETH9.deposit() / fallback).
 const WETH_ADDRESS: Record<ChainName, `0x${string}`> = {
   mainnet: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
   base: '0x4200000000000000000000000000000000000006',
   unichain: '0x4200000000000000000000000000000000000006',
+  sepolia: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+  'base-sepolia': '0x4200000000000000000000000000000000000006',
 };
 
 const NATIVE_ETH = '0x0000000000000000000000000000000000000000';
@@ -51,8 +73,107 @@ const NATIVE_ETH = '0x0000000000000000000000000000000000000000';
 /** Default V3 pool fee tier in hundredths-of-a-bip (3000 = 0.3%). */
 const DEFAULT_POOL_FEE_BPS = '3000';
 
-/** Uniswap V3 SwapRouter02 — same address on every chain we support. */
-const UNISWAP_SWAP_ROUTER02 = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
+/** Per-pair fee-tier preference list. Different pools live at different
+ *  fee tiers on different chains. We try each in order until one works
+ *  (or all fail, in which case we surface the original error). KH's
+ *  /quote-then-execute flow accepts a `fee` param explicitly, so we
+ *  control the pool selection.
+ *
+ *  Map keys are sorted token-pair strings ("LO|HI") so the lookup is
+ *  direction-agnostic. Fee tier values are in hundredths-of-a-bip:
+ *      100  = 0.01% (very stable pairs)
+ *      500  = 0.05% (USDC/USDT, USDC/WETH on most chains)
+ *     3000  = 0.3%  (default, most volatile pairs)
+ *    10000  = 1%    (exotic / illiquid)
+ */
+const FEE_TIER_BY_PAIR_BY_CHAIN: Record<
+  ChainName,
+  Record<string, string[]>
+> = {
+  mainnet: {},
+  base: {},
+  unichain: {},
+  // Sepolia liquidity is patchy: USDC pool lives at 0.05%, WBTC at 0.3%.
+  sepolia: {
+    // Both confirmed working onchain: 0x4cecfea8... (USDC@500) and
+    // 0xe82b3c66... (WBTC@3000). Two-tier max so we don't sit through
+    // 4 minutes of KH timeouts when a pool is just empty.
+    [pairKey(
+      '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+      '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+    )]: ['500', '3000'], // WETH/USDC
+    [pairKey(
+      '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+      '0x29f2D40B0605204364af54EC677bD022dA425d03',
+    )]: ['3000', '500'], // WETH/WBTC
+  },
+  'base-sepolia': {},
+};
+
+/** Build a sorted, lowercased "lo|hi" pair key. */
+function pairKey(a: string, b: string): string {
+  const lo = a.toLowerCase();
+  const hi = b.toLowerCase();
+  return lo < hi ? `${lo}|${hi}` : `${hi}|${lo}`;
+}
+
+/**
+ * Per-KH-wallet mutex. Sepolia (and KH's sequencer) serialize
+ * transactions from a single integration wallet anyway — running our
+ * swap pipeline (wrap → approve → execute) concurrently for the same
+ * wallet just races on WETH balance, allowance reads, and KH's nonce
+ * picker. We serialize at the application layer so the runtime sees
+ * a clean sequence: one wrap completes before the next swap reads
+ * the WETH balance, allowance reads aren't stale, and KH never gets
+ * two execute_protocol_action calls back-to-back from the same wallet.
+ *
+ * The mutex is keyed by wallet address (lowercased). If a future
+ * iteration adds multi-wallet sponsorship, each wallet gets its own
+ * lock.
+ */
+const walletLocks = new Map<string, Promise<void>>();
+
+async function withWalletLock<T>(
+  wallet: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = wallet.toLowerCase();
+  const prev = walletLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((res) => {
+    release = res;
+  });
+  walletLocks.set(key, prev.then(() => next));
+  try {
+    await prev; // wait for the previous swap on this wallet to finish
+    return await fn();
+  } finally {
+    release();
+    // Clean up if nobody else queued behind us.
+    if (walletLocks.get(key) === prev.then(() => next)) {
+      walletLocks.delete(key);
+    }
+  }
+}
+
+/** Get the fee-tier ladder for a token pair on a chain. Falls back to
+ *  the default tier if the pair isn't explicitly mapped. */
+function feeTiersFor(
+  chain: ChainName,
+  tokenA: string,
+  tokenB: string,
+): string[] {
+  const explicit = FEE_TIER_BY_PAIR_BY_CHAIN[chain]?.[pairKey(tokenA, tokenB)];
+  if (explicit && explicit.length > 0) return explicit;
+  // Env override applies to all unmapped pairs.
+  const envOverride = process.env.KEEPERHUB_POOL_FEE;
+  if (envOverride) return [envOverride];
+  return [DEFAULT_POOL_FEE_BPS];
+}
+
+// SwapRouter02 address is now resolved per-chain via swapRouterFor().
+// The hardcoded `0xE592...` constant was wrong — it's the legacy V3
+// SwapRouter (V1), which doesn't exist on testnets.
 
 const MAX_UINT256 =
   '115792089237316195423570985008687907853269984665640564039457584007913129639935';
@@ -87,21 +208,22 @@ export async function ensureTokenApproved(
   token: `0x${string}`,
 ): Promise<void> {
   if (process.env.KEEPERHUB_SKIP_SETUP === 'true') return;
+  const router = swapRouterFor(chain as OnchainChainName);
   try {
     const allowance = await getErc20Allowance(
       chain as OnchainChainName,
       token,
-      SWAP_ROUTER_02,
+      router,
     );
     if (allowance >= ALLOWANCE_REFRESH_THRESHOLD) return; // already enough
     console.log(
-      `[keeperhub] allowance(${token}→SwapRouter02) is ${allowance} (< threshold) — refreshing`,
+      `[keeperhub] allowance(${token}→${router}) is ${allowance} (< threshold) — refreshing`,
     );
     const raw = await callKeeperhubTool('execute_contract_call', {
-      network: 'ethereum',
+      network: KH_NETWORK_IDENT[chain],
       contract_address: token,
       function_name: 'approve',
-      function_args: JSON.stringify([UNISWAP_SWAP_ROUTER02, MAX_UINT256]),
+      function_args: JSON.stringify([router, MAX_UINT256]),
       abi: ERC20_APPROVE_ABI,
       value: '0',
       gas_limit_multiplier: '1.5',
@@ -124,14 +246,14 @@ export async function ensureTokenApproved(
     // Wait for the approve to actually mine before we let the caller
     // proceed to the swap — otherwise SwapRouter02's transferFrom will
     // see a still-zero allowance and revert with STF.
-    await waitForKhExecution(data, `approve(${token})`);
+    await waitForKhExecution(data, `approve(${token})`, chain);
     // Re-read allowance to confirm it landed (RPCs sometimes lag a
     // block or two after KH says "completed").
     for (let i = 0; i < 10; i++) {
       const a = await getErc20Allowance(
         chain as OnchainChainName,
         token,
-        SWAP_ROUTER_02,
+        router,
       );
       if (a >= ALLOWANCE_REFRESH_THRESHOLD) {
         console.log(`[keeperhub] approve(${token}) visible on chain`);
@@ -158,16 +280,31 @@ export async function ensureTokenApproved(
 async function waitForKhExecution(
   data: { executionId?: string; transactionHash?: string },
   label: string,
+  chain: ChainName = 'mainnet',
 ): Promise<void> {
   if (data.transactionHash) {
     // Fast path: KH already returned a tx hash → wait for receipt.
-    const { mainnet } = await import('viem/chains');
+    const { mainnet, sepolia, base, baseSepolia } = await import('viem/chains');
     const { createPublicClient, http } = await import('viem');
+    const viemChain =
+      chain === 'sepolia'
+        ? sepolia
+        : chain === 'base-sepolia'
+          ? baseSepolia
+          : chain === 'base'
+            ? base
+            : mainnet;
+    const rpc =
+      chain === 'sepolia'
+        ? process.env.SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia.publicnode.com'
+        : chain === 'base-sepolia'
+          ? process.env.BASE_SEPOLIA_RPC_URL ?? 'https://base-sepolia.publicnode.com'
+          : chain === 'base'
+            ? process.env.BASE_RPC_URL ?? 'https://base.publicnode.com'
+            : process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com';
     const c = createPublicClient({
-      chain: mainnet,
-      transport: http(
-        process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com',
-      ),
+      chain: viemChain,
+      transport: http(rpc),
     });
     try {
       await c.waitForTransactionReceipt({
@@ -270,7 +407,7 @@ export async function ensureWethBalance(
   // (decimal ETH string, not wei). asset omitted = native ETH.
   const wrapAmountEth = (Number(wrapAmount) / 1e18).toFixed(18);
   const raw = await callKeeperhubTool('execute_transfer', {
-    network: 'ethereum',
+    network: KH_NETWORK_IDENT[chain],
     recipient_address: wethAddr,
     amount: wrapAmountEth,
     integration_id: process.env.KEEPERHUB_INTEGRATION_ID,
@@ -290,7 +427,7 @@ export async function ensureWethBalance(
   );
   // Wait for the wrap to actually mine — otherwise the swap fires
   // before transferFrom can pull WETH and reverts with STF.
-  await waitForKhExecution(data, 'wrap');
+  await waitForKhExecution(data, 'wrap', chain);
   // Then poll the public RPC for the new balance to settle (1 block lag).
   for (let i = 0; i < 30; i++) {
     const bal = await getErc20Balance(chain as OnchainChainName, wethAddr);
@@ -439,6 +576,17 @@ function idField(obj: Record<string, unknown> | undefined): string | undefined {
 export async function submitJob(
   req: SubmitJobRequest,
 ): Promise<{ jobId: string }> {
+  // Serialize all KH calls per wallet — see walletLocks doc above.
+  // Sepolia + KH both serialize per-wallet anyway; doing it here means
+  // ensureWethBalance, ensureTokenApproved, and execute_protocol_action
+  // see consistent state on each invocation instead of racing.
+  const lockWallet = await getKeeperhubWalletAddress();
+  return withWalletLock(lockWallet, () => submitJobInner(req));
+}
+
+async function submitJobInner(
+  req: SubmitJobRequest,
+): Promise<{ jobId: string }> {
   // Uniswap V3 single-hop expects ERC-20 token addresses on both legs.
   // Native ETH (0x0) becomes WETH for the action's purposes; the KH
   // wallet either holds enough WETH or we wrap on-the-fly below.
@@ -478,33 +626,44 @@ export async function submitJob(
   // USDC for USDC→*, etc). One-time per token per wallet.
   await ensureTokenApproved(req.chain, tokenIn);
 
+  // Diagnostic: log balance + allowance right before the swap so STF
+  // errors are debuggable without reading the chain. If you see
+  // `bal: 0` or `allowance: 0` here, you know exactly which precondition
+  // failed before KH even called the router.
+  const router = swapRouterFor(req.chain as OnchainChainName);
+  {
+    const wallet = await getKeeperhubWalletAddress();
+    const bal = await getErc20Balance(req.chain as OnchainChainName, tokenIn);
+    const allowance = await getErc20Allowance(
+      req.chain as OnchainChainName,
+      tokenIn,
+      router,
+    );
+    console.log(
+      `[keeperhub] pre-swap state wallet=${wallet} token=${tokenIn} bal=${bal} allowance=${allowance} amountIn=${req.swap.amountIn} router=${router}`,
+    );
+    // Hard-fail with a clear message before KH returns its opaque STF.
+    if (bal < BigInt(req.swap.amountIn)) {
+      throw new Error(
+        `pre-swap: balance ${bal} < amountIn ${req.swap.amountIn} (token ${tokenIn} on ${req.chain}). ensureWethBalance/funding step did not land.`,
+      );
+    }
+    if (allowance < BigInt(req.swap.amountIn)) {
+      throw new Error(
+        `pre-swap: allowance ${allowance} to ${router} < amountIn ${req.swap.amountIn}. ensureTokenApproved did not land — possibly approving the wrong router for this chain.`,
+      );
+    }
+  }
+
   const actionType = await findUniswapSwapAction();
   const integrationId = process.env.KEEPERHUB_INTEGRATION_ID;
 
-  const args: Record<string, unknown> = {
-    actionType,
-    integrationId,
-    network: NETWORK_CHAIN_ID[req.chain],
-    params: {
-      network: NETWORK_CHAIN_ID[req.chain],
-      tokenIn,
-      tokenOut,
-      fee: process.env.KEEPERHUB_POOL_FEE ?? DEFAULT_POOL_FEE_BPS,
-      recipient: req.swap.recipient,
-      amountIn: req.swap.amountIn,
-      // Slippage handled at quote time; pass "0" to mean "accept any output".
-      // Bump KEEPERHUB_MIN_OUT to enforce a floor.
-      amountOutMinimum: process.env.KEEPERHUB_MIN_OUT ?? '0',
-      // Docs mark this optional but the action validator rejects without
-      // it. "0" = no price limit (accept the pool's current price).
-      sqrtPriceLimitX96: '0',
-      gasLimitMultiplier: '1.5',
-    },
-    metadata: req.metadata,
-  };
-
-  const raw = await callKeeperhubTool('execute_protocol_action', args);
-  const data = unwrapResult(raw) as {
+  // Walk the fee-tier ladder for this pair. Sepolia pools live at
+  // different fee tiers per pair (USDC at 0.05%, WBTC at 0.3%, etc).
+  // First tier that doesn't return a STF/no-pool error wins.
+  const tiers = feeTiersFor(req.chain, tokenIn, tokenOut);
+  let lastError = 'unknown';
+  let data: {
     success?: boolean;
     executionId?: string;
     jobId?: string;
@@ -512,11 +671,57 @@ export async function submitJob(
     transactionHash?: string;
     transactionLink?: string;
     error?: string;
-  };
+  } | null = null;
 
-  if (data.success === false) {
+  for (const fee of tiers) {
+    const args: Record<string, unknown> = {
+      actionType,
+      integrationId,
+      network: NETWORK_CHAIN_ID[req.chain],
+      params: {
+        network: NETWORK_CHAIN_ID[req.chain],
+        tokenIn,
+        tokenOut,
+        fee,
+        recipient: req.swap.recipient,
+        amountIn: req.swap.amountIn,
+        // Slippage handled at quote time; pass "0" to mean "accept any output".
+        // Bump KEEPERHUB_MIN_OUT to enforce a floor.
+        amountOutMinimum: process.env.KEEPERHUB_MIN_OUT ?? '0',
+        // Docs mark this optional but the action validator rejects without
+        // it. "0" = no price limit (accept the pool's current price).
+        sqrtPriceLimitX96: '0',
+        gasLimitMultiplier: '1.5',
+      },
+      metadata: req.metadata,
+    };
+
+    console.log(`[keeperhub] trying fee tier ${fee} for ${tokenIn}->${tokenOut}`);
+    const raw = await callKeeperhubTool('execute_protocol_action', args);
+    data = unwrapResult(raw) as typeof data;
+
+    if (data?.success === false) {
+      lastError = data.error ?? 'unknown';
+      console.log(
+        `[keeperhub] fee tier ${fee} failed (${lastError.slice(0, 80)}), trying next...`,
+      );
+      // Only retry on errors that suggest "wrong pool" — STF, no pool,
+      // insufficient liquidity. Other errors (insufficient balance,
+      // bad params) won't be fixed by a different tier, fail fast.
+      const retryable =
+        /STF|no pool|insufficient liquidity|InsufficientLiquidity|Pool does not exist|reverted/i.test(
+          lastError,
+        );
+      if (!retryable) break;
+      continue;
+    }
+    // Got a non-error response — break out of the ladder.
+    break;
+  }
+
+  if (!data || data.success === false) {
     throw new Error(
-      `KeeperHub: execute_protocol_action failed: ${data.error ?? 'unknown'}`,
+      `KeeperHub: execute_protocol_action failed across fee tiers ${tiers.join(',')}: ${lastError}`,
     );
   }
 

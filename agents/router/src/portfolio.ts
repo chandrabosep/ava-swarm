@@ -1,9 +1,25 @@
-// Same Zerion-snapshot helper PM uses, narrowed to what Router needs:
+// Same portfolio helper PM uses, narrowed to what Router needs:
 // the user's current per-symbol USD holdings AND a derived USD price so
 // the Executor can convert USD notional → token amount in smallest unit
 // when calling Uniswap.
+//
+// Source: Zerion on mainnets (where it's indexed), Alchemy on testnets
+// (Zerion doesn't cover Sepolia/Base Sepolia). Toggled by USE_TESTNET.
+//
+// Reads from the user's EOA by default — under EIP-7702 the EOA *is*
+// the smart account, so PM's targets and Router's "current slices"
+// must reference the same wallet or the diff math goes the wrong way
+// (PM proposes targets against EOA, Router compares them against KH,
+// emits opposite-direction swaps). Set PM_PORTFOLIO_FROM=kh for the
+// legacy Model B path where Router needs to track the KH wallet's
+// holdings instead.
 
-import { env } from '@swarm/shared';
+import {
+  env,
+  fetchAlchemyTokens,
+  alchemyBalanceFloat,
+  alchemyUsdPrice,
+} from '@swarm/shared';
 import type { Symbol } from './tokens.js';
 import type { CurrentSlice } from './decompose.js';
 
@@ -29,8 +45,83 @@ interface ZerionPositionsResponse {
 
 const ALLOWED: Symbol[] = ['ETH', 'WETH', 'WBTC', 'USDC', 'UNI'];
 
-export async function currentSlices(safe: string): Promise<CurrentSlice[]> {
-  const url = `${env.zerionProxyUrl()}/wallets/${safe.toLowerCase()}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`;
+/** Same selector PM uses — reads the user's EOA by default. Override
+ *  with PM_PORTFOLIO_FROM=kh to revert to the legacy KH-wallet path. */
+function effectiveWallet(userEoa: string): string {
+  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'eoa').toLowerCase();
+  if (mode === 'kh') {
+    return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
+  }
+  return userEoa;
+}
+
+export async function currentSlices(wallet: string): Promise<CurrentSlice[]> {
+  const target = effectiveWallet(wallet);
+  // Mirror PM's source-selection logic — see agents/pm/src/portfolio.ts.
+  if (env.useTestnet() || env.portfolioSource() === 'alchemy') {
+    return currentSlicesAlchemy(target);
+  }
+  return currentSlicesZerion(target);
+}
+
+/** Map raw symbol → canonical bucket. WETH collapses into ETH because
+ *  PM only proposes "ETH" targets — keeping them separate makes Router
+ *  emit phantom WETH→USDC swaps for any orphan WETH balance, which KH
+ *  can rarely fulfill. They're economically equivalent (1:1 wrap), so
+ *  treat them as one slice. Same for any future canonical merges. */
+function canonicalSymbol(sym: string): Symbol | null {
+  const upper = sym.toUpperCase();
+  if (upper === 'WETH') return 'ETH';
+  if ((['ETH', 'WBTC', 'USDC', 'UNI'] as const).includes(upper as Symbol)) {
+    return upper as Symbol;
+  }
+  return null;
+}
+
+async function currentSlicesAlchemy(wallet: string): Promise<CurrentSlice[]> {
+  const tokens = await fetchAlchemyTokens(wallet.toLowerCase());
+  // Aggregate across networks (a user might hold WETH on multiple chains).
+  interface Acc {
+    valueUsd: number;
+    quantity: number;
+    decimals: number;
+  }
+  const map = new Map<Symbol, Acc>();
+  for (const t of tokens) {
+    if (t.error) continue;
+    const rawSym = t.tokenMetadata?.symbol ?? '';
+    // Native tokens come back without a metadata.symbol on some chains —
+    // a null tokenAddress means it's the chain's native asset, which we
+    // treat as ETH for our universe.
+    const effectiveRaw =
+      t.tokenAddress === null && !rawSym ? 'ETH' : rawSym;
+    const effectiveSym = canonicalSymbol(effectiveRaw);
+    if (!effectiveSym) continue;
+    const qty = alchemyBalanceFloat(t);
+    const priceUsd = alchemyUsdPrice(t);
+    const decimals = t.tokenMetadata?.decimals ?? defaultDecimals(effectiveSym);
+    const valueUsd = qty * priceUsd;
+    const cur = map.get(effectiveSym) ?? {
+      valueUsd: 0,
+      quantity: 0,
+      decimals,
+    };
+    cur.valueUsd += valueUsd;
+    cur.quantity += qty;
+    cur.decimals = Math.max(cur.decimals, decimals);
+    map.set(effectiveSym, cur);
+  }
+  return Array.from(map.entries()).map(([symbol, acc]) => ({
+    symbol,
+    valueUsd: acc.valueUsd,
+    priceUsd:
+      acc.quantity > 0 ? acc.valueUsd / acc.quantity : fallbackPrice(symbol),
+    decimals: acc.decimals,
+  }));
+}
+
+async function currentSlicesZerion(wallet: string): Promise<CurrentSlice[]> {
+  const url = `${env.zerionProxyUrl()}/wallets/${wallet.toLowerCase()}/positions/?currency=usd&filter[positions]=only_simple&filter[trash]=only_non_trash&sort=-value`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Zerion ${res.status}`);
   const json = (await res.json()) as ZerionPositionsResponse;
@@ -46,8 +137,8 @@ export async function currentSlices(safe: string): Promise<CurrentSlice[]> {
   }
   const map = new Map<Symbol, Acc>();
   for (const p of json.data) {
-    const sym = p.attributes.fungible_info.symbol as Symbol;
-    if (!ALLOWED.includes(sym)) continue;
+    const sym = canonicalSymbol(p.attributes.fungible_info.symbol);
+    if (!sym) continue;
     const value = p.attributes.value ?? 0;
     const qty = parseFloat(p.attributes.quantity?.numeric ?? '0') || 0;
     const dec =

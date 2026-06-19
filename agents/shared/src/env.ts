@@ -35,8 +35,15 @@ export const env = {
   // (see PM_SERVICE_PRIVKEY etc. and src/keys.ts).
 
   // Onchain RPCs
-  rpc: (chain: 'mainnet' | 'base' | 'unichain'): string =>
-    required(`RPC_${chain.toUpperCase()}`),
+  rpc: (
+    chain:
+      | 'mainnet'
+      | 'base'
+      | 'unichain'
+      | 'sepolia'
+      | 'base-sepolia',
+  ): string =>
+    required(`RPC_${chain.toUpperCase().replace(/-/g, '_')}`),
 
   // Sponsor APIs
   keeperhubApiKey: () => required('KEEPERHUB_API_KEY'),
@@ -70,4 +77,38 @@ export const env = {
 
   // Zerion
   zerionProxyUrl: () => required('ZERION_PROXY_URL'),
+
+  // Alchemy — used as the testnet portfolio source (Zerion doesn't index
+  // testnets) and as a Zerion replacement on mainnet when
+  // PORTFOLIO_SOURCE=alchemy. Same balance/price/metadata shape; just a
+  // different upstream.
+  useTestnet: (): boolean => {
+    const v = optional('USE_TESTNET', 'false')!.toLowerCase();
+    return v === 'true' || v === '1' || v === 'yes';
+  },
+  /**
+   * Which portfolio source PM + Router pull from on mainnet:
+   *   `zerion` (default) — Zerion proxy worker.
+   *   `alchemy`           — Alchemy Portfolio API across alchemyNetworks().
+   * On testnet (USE_TESTNET=true), Alchemy is forced regardless.
+   */
+  portfolioSource: (): 'zerion' | 'alchemy' => {
+    const v = (optional('PORTFOLIO_SOURCE', 'zerion') ?? 'zerion').toLowerCase();
+    if (v !== 'zerion' && v !== 'alchemy') {
+      throw new Error(
+        `[env] PORTFOLIO_SOURCE must be 'zerion' or 'alchemy', got '${v}'`,
+      );
+    }
+    return v;
+  },
+  alchemyApiKey: () => required('ALCHEMY_API_KEY'),
+  /** Comma-separated Alchemy network identifiers (e.g.
+   *  "eth-sepolia,base-sepolia"). Default = Sepolia + Base Sepolia for
+   *  testnet; pair with `eth-mainnet,base-mainnet,unichain-mainnet` when
+   *  PORTFOLIO_SOURCE=alchemy on mainnet. */
+  alchemyNetworks: (): string[] =>
+    optional('ALCHEMY_NETWORKS', 'eth-sepolia,base-sepolia')!
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
 };

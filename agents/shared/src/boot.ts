@@ -65,29 +65,23 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
   // Sentinel User row that satisfies the AgentState FK for global
   // (non-tenant-scoped) heartbeat rows. Idempotent.
   await db().user.upsert({
-    where: { safeAddress: GLOBAL_HEARTBEAT_KEY },
+    where: { walletAddress: GLOBAL_HEARTBEAT_KEY },
     update: {},
     create: {
-      safeAddress: GLOBAL_HEARTBEAT_KEY,
+      walletAddress: GLOBAL_HEARTBEAT_KEY,
       ownerEoa: GLOBAL_HEARTBEAT_KEY,
       chains: '',
     },
   });
 
-  // PG gossip bus — opens a dedicated LISTEN connection lazily on first
-  // publish/subscribe. Falls back gracefully if DIRECT_URL is unset or
-  // the connection drops; DB poll always catches missed messages.
+  // PG gossip bus — opens a dedicated LISTEN connection lazily on the
+  // first publish/subscribe. Agents that never subscribe (e.g. API,
+  // sometimes ALM/Executor) don't open a session at all, which keeps
+  // us under Supabase's 15-client session pool cap on free tier.
   const pg = pgGossip();
   pg.onLifecycle = (event, meta) => log.info(event, meta);
-  // Pre-warm the connection so the first publish/subscribe doesn't pay
-  // the connection-establishment latency on the critical path.
-  void pg
-    .publish({ topic: 'swarm.boot.ping', from: role, payload: { ts: Date.now() } })
-    .catch(() => {
-      /* boot ping is best-effort */
-    });
 
-  installShutdownHandlers(log);
+  installShutdownHandlers(log, pg);
   return { role, log, axl, pg, identity };
 }
 
@@ -97,7 +91,7 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
  * subscription.
  *
  * We use the AgentState table (one row per agent globally — null
- * safeAddress placeholder) for the latest heartbeat, since per-tenant
+ * walletAddress placeholder) for the latest heartbeat, since per-tenant
  * agent state is already tracked elsewhere. The Event table gets one row
  * per heartbeat for the activity timeline.
  */
@@ -131,15 +125,15 @@ export function startHeartbeat(
       // needing a per-tenant scan.
       await db().agentState.upsert({
         where: {
-          agent_safeAddress: {
+          agent_walletAddress: {
             agent: ctx.role,
-            safeAddress: GLOBAL_HEARTBEAT_KEY,
+            walletAddress: GLOBAL_HEARTBEAT_KEY,
           },
         },
         update: { state: { peerId: ctx.identity.peerId, users, ts } },
         create: {
           agent: ctx.role,
-          safeAddress: GLOBAL_HEARTBEAT_KEY,
+          walletAddress: GLOBAL_HEARTBEAT_KEY,
           state: { peerId: ctx.identity.peerId, users, ts },
         },
       });
@@ -158,15 +152,28 @@ export function startHeartbeat(
 }
 
 /**
- * Sentinel safeAddress used to key the per-agent global heartbeat row.
- * It's not a real Safe — the User row created on first boot satisfies
- * the FK; we delete it on shutdown if nothing else references it.
+ * Sentinel walletAddress used to key the per-agent global heartbeat
+ * row. Not a real wallet — the User row created on first boot
+ * satisfies the FK; we delete it on shutdown if nothing else
+ * references it.
  */
 export const GLOBAL_HEARTBEAT_KEY = '0x0000000000000000000000000000000000000000';
 
-function installShutdownHandlers(log: Logger): void {
+function installShutdownHandlers(log: Logger, pg?: PgGossipBus): void {
   const shutdown = async (signal: string) => {
     log.info(`received ${signal} — shutting down`);
+    // Close the PG gossip session FIRST so we release the slot in
+    // Supabase's session pool. Without this, hard restarts pile up
+    // orphaned sessions until we hit EMAXCONNSESSION.
+    if (pg) {
+      try {
+        await pg.close();
+      } catch (err) {
+        log.warn('pg gossip close threw', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     try {
       await disconnectDb();
     } catch (err) {

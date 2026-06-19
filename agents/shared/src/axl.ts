@@ -167,6 +167,13 @@ export const TOPICS = {
   heartbeat: 'swarm.heartbeat',
   otcAdvertise: 'swarm.otc.advertise',
   otcConfirm: 'swarm.otc.confirm',
+  // Debate protocol — PM publishes a draft proposal, peer agents weigh
+  // in with concerns, PM reconciles, then publishes the final
+  // allocation on pmAllocation. Heavy mesh traffic, real consensus
+  // mechanic. See agents/pm/src/debate.ts.
+  pmDraft: 'swarm.pm.draft',
+  almFeedback: 'swarm.alm.feedback',
+  routerFeedback: 'swarm.router.feedback',
 } as const;
 
 export type { AgentRole };

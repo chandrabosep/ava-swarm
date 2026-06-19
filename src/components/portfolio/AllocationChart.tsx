@@ -3,6 +3,7 @@ import { Surface } from '@/components/common/Surface';
 import { useFungiblePositions } from '@/hooks/usePortfolio';
 import { summarizePositions } from '@/lib/portfolio';
 import { formatPct, formatUsd } from '@/lib/format';
+import { USE_TESTNET } from '@/config/swarm';
 
 const SLICE_COLORS = [
   'bg-accent',
@@ -22,23 +23,25 @@ export function AllocationChart() {
   const allocations = summary?.allocations ?? [];
 
   return (
-    <Surface className="p-5">
+    <Surface className="hud-corners p-5">
       <div className="flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold">Allocation</h3>
-        <span className="text-[11px] text-fg-subtle uppercase tracking-wider">
+        <h3 className="hud-title text-sm">Allocation</h3>
+        <span className="text-[10px] text-fg-subtle uppercase tracking-hud font-sans">
           {!isConnected
             ? 'connect wallet'
             : positions.isLoading
               ? 'loading'
               : positions.error
                 ? 'error'
-                : 'live · zerion'}
+                : USE_TESTNET
+                  ? 'live · alchemy'
+                  : 'live · zerion'}
         </span>
       </div>
 
       {/* Stacked bar — keeps us off a chart library for now. */}
       <div
-        className="mt-4 h-2.5 w-full rounded-full overflow-hidden flex bg-bg-hover"
+        className="mt-4 h-2.5 w-full rounded-sm overflow-hidden flex bg-bg-hover/60 border border-border-subtle shadow-[inset_0_0_8px_rgba(0,0,0,0.5)]"
         role="img"
         aria-label="Portfolio allocation by token"
       >
@@ -47,7 +50,7 @@ export function AllocationChart() {
         ) : (
           allocations.map((slice, i) => (
             <div
-              key={slice.symbol}
+              key={`${slice.symbol}-${i}`}
               className={SLICE_COLORS[i % SLICE_COLORS.length]}
               style={{ width: `${slice.pct * 100}%` }}
               title={`${slice.symbol}: ${formatPct(slice.pct)}`}
@@ -62,7 +65,7 @@ export function AllocationChart() {
             {!isConnected
               ? 'Connect a wallet to see your token allocation.'
               : positions.isLoading
-                ? 'Fetching positions from Zerion…'
+                ? `Fetching positions from ${USE_TESTNET ? 'Alchemy' : 'Zerion'}…`
                 : positions.error
                   ? 'Could not load positions.'
                   : 'No positions found for this address.'}
@@ -79,7 +82,7 @@ export function AllocationChart() {
         <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           {allocations.map((slice, i) => (
             <li
-              key={slice.symbol}
+              key={`${slice.symbol}-${i}`}
               className="flex items-center justify-between"
             >
               <span className="flex items-center gap-2">

@@ -1,8 +1,8 @@
-// Onchain reads: subscribe to Smart Sessions events, look up session state.
+// Onchain reads: subscribe to delegation events, look up session state.
 //
 // This is the registry for "which users does this agent serve?" An agent's
-// service identity is a fixed pubkey baked into its env. When a Safe owner
-// signs a session-grant onchain, the Smart Sessions module emits an event
+// service identity is a fixed pubkey baked into its env. When an EOA
+// signs a delegation grant onchain, the registry emits an event
 // containing that pubkey — agents listen, recognize themselves, and
 // auto-enroll the user in their DB.
 //

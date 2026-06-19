@@ -11,10 +11,18 @@ import {
   type SwarmMessage,
 } from '@swarm/shared';
 import { startTick } from './tick.js';
+import { startDebateInbox } from './debate.js';
 
 async function main() {
   const ctx = await bootAgent('pm');
   const stopHeartbeat = startHeartbeat(ctx);
+
+  // Long-lived debate feedback inbox — must register LISTEN on the
+  // alm.feedback / router.feedback channels BEFORE the first tick,
+  // otherwise peers' immediate replies arrive at an empty subscriber
+  // set and PM sees zero feedback.
+  const stopInbox = startDebateInbox(ctx);
+
   const stopTick = startTick(ctx);
 
   // Listen for executor receipts so the LLM has post-trade context next tick.
@@ -29,12 +37,18 @@ async function main() {
   ctx.log.info('ready', {
     role: 'pm',
     publishes: TOPICS.pmAllocation,
-    listens: [TOPICS.executorReceipt, TOPICS.heartbeat],
+    listens: [
+      TOPICS.executorReceipt,
+      TOPICS.heartbeat,
+      TOPICS.almFeedback,
+      TOPICS.routerFeedback,
+    ],
   });
 
   process.stdin.resume();
   void stopHeartbeat;
   void stopTick;
+  void stopInbox;
 }
 
 main().catch((err: unknown) => {

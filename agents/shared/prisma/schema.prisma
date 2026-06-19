@@ -1,7 +1,10 @@
 // Multi-tenant agent state.
 //
-// Primary key everywhere is the user's deterministic Safe address — it's
-// the same string across chains so we don't have to scope by (chain, addr).
+// Primary key everywhere is the user's EOA wallet address — under
+// EIP-7702 / Calibur-style delegation the EOA *is* the account, so the
+// same string identifies the user across chains. The DB column is
+// historically named `safe_address` (kept via @map for zero-migration
+// compatibility); the application-level field is `walletAddress`.
 // Per-chain runtime state goes in AgentState.state JSON when needed.
 
 generator client {
@@ -32,20 +35,20 @@ enum IntentStatus {
 }
 
 model User {
-  safeAddress String   @id @map("safe_address")
-  ownerEoa    String   @map("owner_eoa")
-  /// Comma-separated list of chains where the Safe is deployed + active.
-  chains      String   @default("")
+  walletAddress String   @id @map("safe_address")
+  ownerEoa      String   @map("owner_eoa")
+  /// Comma-separated list of chains where the wallet is active.
+  chains        String   @default("")
   /// User-tunable risk profile. PM reads this every tick to pick its
   /// system prompt + tolerance + cadence. One of:
   /// 'conservative' | 'balanced' | 'aggressive' | 'degen'.
-  riskProfile String   @default("balanced") @map("risk_profile")
+  riskProfile   String   @default("balanced") @map("risk_profile")
   /// Optional per-knob overrides on top of the profile preset. Any key
   /// from ProfileConfig can be customized: stableFloor, maxToken,
   /// maxShiftPerTick, toleranceBps, cadenceMinutes. PM merges this on
   /// top of the profile defaults each tick.
-  customConfig Json?   @map("custom_config")
-  createdAt   DateTime @default(now()) @map("created_at")
+  customConfig  Json?    @map("custom_config")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   sessions    Session[]
   intents     Intent[]
@@ -57,10 +60,10 @@ model User {
 
 model Session {
   id             String    @id @default(uuid())
-  safeAddress    String    @map("safe_address")
+  walletAddress  String    @map("safe_address")
   agent          AgentRole
   /// Public address of THIS agent's service keypair, mirrored from
-  /// the onchain Smart Sessions grant. Same value across all users for
+  /// the onchain delegation grant. Same value across all users for
   /// a given agent — see Model B in agents/README.md.
   sessionAddress String    @map("session_address")
   /// Stable hash of the policy granted onchain — for change detection.
@@ -68,42 +71,42 @@ model Session {
   grantedAt      DateTime  @default(now()) @map("granted_at")
   validUntil     DateTime  @map("valid_until")
 
-  user           User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user           User      @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@unique([safeAddress, agent])
+  @@unique([walletAddress, agent], map: "sessions_safe_address_agent_key")
   @@index([agent, validUntil])
   @@map("sessions")
 }
 
 model Intent {
-  id          String       @id @default(uuid())
-  safeAddress String       @map("safe_address")
-  fromAgent   AgentRole    @map("from_agent")
+  id            String       @id @default(uuid())
+  walletAddress String       @map("safe_address")
+  fromAgent     AgentRole    @map("from_agent")
   /// Free-form per-intent payload. Schema enforced in TS, not SQL.
-  payload     Json
-  status      IntentStatus @default(pending)
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @updatedAt @map("updated_at")
+  payload       Json
+  status        IntentStatus @default(pending)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  user        User         @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user          User         @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@index([safeAddress, status])
+  @@index([walletAddress, status], map: "intents_safe_address_status_idx")
   @@index([status, createdAt])
   @@map("intents")
 }
 
 model Event {
-  id          String     @id @default(uuid())
-  safeAddress String     @map("safe_address")
-  agent       AgentRole?
+  id            String     @id @default(uuid())
+  walletAddress String     @map("safe_address")
+  agent         AgentRole?
   /// Short event kind tag, e.g. "session.granted", "intent.executed", "alm.tick".
-  kind        String
-  payload     Json?
-  createdAt   DateTime   @default(now()) @map("created_at")
+  kind          String
+  payload       Json?
+  createdAt     DateTime   @default(now()) @map("created_at")
 
-  user        User       @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user          User       @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@index([safeAddress, createdAt])
+  @@index([walletAddress, createdAt], map: "events_safe_address_created_at_idx")
   @@index([kind, createdAt])
   @@map("events")
 }
@@ -149,15 +152,95 @@ model SwarmSettings {
 }
 
 model AgentState {
-  agent       AgentRole
-  safeAddress String    @map("safe_address")
+  agent         AgentRole
+  walletAddress String    @map("safe_address")
   /// Per-tenant runtime state — last-tick timestamp, cached LP positions,
   /// allocation snapshot, whatever each agent needs.
-  state       Json
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  state         Json
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  user        User      @relation(fields: [safeAddress], references: [safeAddress], onDelete: Cascade)
+  user          User      @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
 
-  @@id([agent, safeAddress])
+  @@id([agent, walletAddress])
   @@map("agent_state")
+}
+
+/// Global swarm-wide settings. Single-row table keyed by id='global'.
+///
+/// Legacy: held a single installed skill (skill_*). Superseded by the
+/// per-agent-role `Skill` table below. Columns kept for backward-compat
+/// during the transition; nothing in the codebase reads them anymore.
+/// Drop in a follow-up migration once the new skills flow has soaked.
+model SwarmSettings {
+  id               String    @id @default("global")
+  skillName        String?   @map("skill_name")
+  skillVersion     String?   @map("skill_version")
+  skillDescription String?   @map("skill_description")
+  skillContent     String?   @map("skill_content")
+  skillApiKey      String?   @map("skill_api_key")
+  skillInstalledAt DateTime? @map("skill_installed_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@map("swarm_settings")
+}
+
+/// Per-agent installed skill. Modeled after SwarmProtocol's
+/// `.skill-lock.json` (sourceUrl + contentHash for drift detection) +
+/// the moltbook self-register flow (apiKey + claimUrl + verificationCode
+/// returned by `POST /agents/register`, claim status flipped to
+/// `claimed` once the human verifies on the skill's site).
+///
+/// Identity model: each (agentRole, name) pair is a distinct install, so
+/// PM and Executor can both have a moltbook install with separate keys
+/// + separate claim URLs. The host allowlist for the LLM tool loop is
+/// derived from the SKILL.md body once at install time — see
+/// agents/pm/src/skill.ts.
+///
+/// SECURITY: `apiKey` is server-only — never echoed back to the UI in
+/// full, never embedded in an LLM prompt. It's attached server-side to
+/// outbound requests against the discovered `apiBase` host(s) only.
+model Skill {
+  id                String    @id @default(uuid())
+  /// Which swarm agent owns this install. Same skill can be installed for
+  /// multiple agents (each gets its own self-registered identity + key).
+  agentRole         AgentRole @map("agent_role")
+  /// Skill name (frontmatter `name:`). Stable identifier within a role.
+  name              String
+  version           String?
+  description       String?
+  /// URL the SKILL.md was fetched from, or null if pasted inline.
+  sourceUrl         String?   @map("source_url")
+  /// SHA-256 of `content` at install time. Lets the heartbeat job detect
+  /// upstream drift (fetch source, compare hash, surface "update available").
+  contentHash       String    @map("content_hash")
+  /// Full SKILL.md text (frontmatter + body). Verbatim so the PM tool
+  /// loop can inject it into the system prompt.
+  content           String
+  /// Comma-separated list of hosts the LLM tool loop is allowed to hit
+  /// on this skill's behalf. Derived from https URLs in the SKILL.md.
+  allowedHosts      String    @default("") @map("allowed_hosts")
+  /// Discovered registration endpoint (e.g. .../agents/register).
+  registerEndpoint  String?   @map("register_endpoint")
+  /// Discovered status endpoint for claim polling (e.g. .../agents/status).
+  statusEndpoint    String?   @map("status_endpoint")
+  /// Discovered API base (frontmatter metadata.*.api_base when present).
+  apiBase           String?   @map("api_base")
+  /// API key returned by self-register. Server-only.
+  apiKey            String?   @map("api_key")
+  /// URL the human visits to claim the registered agent.
+  claimUrl          String?   @map("claim_url")
+  /// Short verification code displayed alongside the claim URL.
+  verificationCode  String?   @map("verification_code")
+  /// `unknown` until first status check; then `pending_claim` | `claimed` | `failed`.
+  claimStatus       String    @default("unknown") @map("claim_status")
+  /// Updated by the heartbeat poller on every successful status check.
+  lastHeartbeatAt   DateTime? @map("last_heartbeat_at")
+  /// Identity the swarm registered itself under (the `name` we sent).
+  registeredName    String?   @map("registered_name")
+  installedAt       DateTime  @default(now()) @map("installed_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@unique([agentRole, name])
+  @@index([agentRole])
+  @@map("skills")
 }

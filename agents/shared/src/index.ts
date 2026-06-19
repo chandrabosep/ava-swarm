@@ -10,3 +10,4 @@ export * from './boot.js';
 export * from './keys.js';
 export * from './intent-poll.js';
 export * from './pg-gossip.js';
+export * from './alchemy.js';

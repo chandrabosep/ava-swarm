@@ -4,7 +4,8 @@
 // For each user × chain, read their positions, analyze them, and emit a
 // RebalanceIntent on AXL for any out-of-range position.
 //
-// Idempotent: Router de-dupes intents by (safeAddress, poolId, reason)
+// Idempotent: Router de-dupes intents by (walletAddress, poolId, reason)
+// Note: agentState lookup uses agent_walletAddress composite key from Prisma.
 // in a recent window, so re-emitting the same finding is harmless.
 
 import {
@@ -21,7 +22,13 @@ import { analyzePositions } from './strategy.js';
 
 const TICK_INTERVAL_MS = 60_000;
 
-const CHAINS_TO_SCAN: SupportedChain[] = ['mainnet', 'base', 'unichain'];
+// Which chains ALM scans for v4 LP positions. On testnet, only Sepolia
+// + Base Sepolia have v4 deployments; mainnet entries are skipped under
+// USE_TESTNET=true via env.useTestnet() check below.
+import { env } from '@swarm/shared';
+const CHAINS_TO_SCAN: SupportedChain[] = env.useTestnet()
+  ? ['sepolia', 'base-sepolia']
+  : ['mainnet', 'base', 'unichain'];
 
 export function startTick(ctx: AgentContext): () => void {
   let stopped = false;
@@ -50,16 +57,16 @@ async function tickAll(ctx: AgentContext): Promise<void> {
   // All users that have an unexpired ALM session.
   const sessions = await db().session.findMany({
     where: { agent: 'alm', validUntil: { gt: new Date() } },
-    select: { safeAddress: true },
+    select: { walletAddress: true },
   });
 
-  for (const { safeAddress } of sessions) {
+  for (const { walletAddress } of sessions) {
     for (const chain of CHAINS_TO_SCAN) {
       try {
-        await tickUser(ctx, safeAddress as `0x${string}`, chain);
+        await tickUser(ctx, walletAddress as `0x${string}`, chain);
       } catch (err) {
         ctx.log.warn('user tick failed', {
-          safeAddress,
+          walletAddress,
           chain,
           err: err instanceof Error ? err.message : String(err),
         });
@@ -70,10 +77,10 @@ async function tickAll(ctx: AgentContext): Promise<void> {
 
 async function tickUser(
   ctx: AgentContext,
-  safeAddress: `0x${string}`,
+  walletAddress: `0x${string}`,
   chain: SupportedChain,
 ): Promise<void> {
-  const positions = await readPositions(safeAddress, chain);
+  const positions = await readPositions(walletAddress, chain);
   if (positions.length === 0) return;
 
   const analyses = await analyzePositions(positions, chain);
@@ -82,7 +89,7 @@ async function tickUser(
   // Cache the snapshot regardless of verdict so the dashboard can show
   // "last looked: now, 0 drifted".
   await db().agentState.upsert({
-    where: { agent_safeAddress: { agent: 'alm', safeAddress } },
+    where: { agent_walletAddress: { agent: 'alm', walletAddress } },
     update: {
       state: {
         chain,
@@ -93,7 +100,7 @@ async function tickUser(
     },
     create: {
       agent: 'alm',
-      safeAddress,
+      walletAddress,
       state: {
         chain,
         positions: positions.length,
@@ -104,13 +111,13 @@ async function tickUser(
   });
 
   for (const analysis of drifted) {
-    await emitRebalanceIntent(ctx, safeAddress, chain, analysis);
+    await emitRebalanceIntent(ctx, walletAddress, chain, analysis);
   }
 }
 
 async function emitRebalanceIntent(
   ctx: AgentContext,
-  safeAddress: `0x${string}`,
+  walletAddress: `0x${string}`,
   chain: SupportedChain,
   analysis: { position: { poolId: string; liquidity: bigint }; currentTick: number },
 ): Promise<void> {
@@ -128,7 +135,7 @@ async function emitRebalanceIntent(
 
   const row = await db().intent.create({
     data: {
-      safeAddress,
+      walletAddress,
       fromAgent: 'alm',
       payload: intent as unknown as object,
       status: 'pending',
@@ -137,7 +144,7 @@ async function emitRebalanceIntent(
 
   await db().event.create({
     data: {
-      safeAddress,
+      walletAddress,
       agent: 'alm',
       kind: 'intent.created',
       payload: { intentId: row.id, reason: 'range-drift', poolId: intent.poolId },
@@ -146,13 +153,13 @@ async function emitRebalanceIntent(
 
   const msg: SwarmMessage<RebalanceIntent> = {
     fromAgent: 'alm',
-    safeAddress,
+    walletAddress,
     ts: Date.now(),
     payload: intent,
   };
   await ctx.axl.publish({ topic: TOPICS.almRebalance, payload: msg });
   ctx.log.info('rebalance proposed', {
-    safeAddress,
+    walletAddress,
     chain,
     poolId: analysis.position.poolId,
     intentId: row.id,

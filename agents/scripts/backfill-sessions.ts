@@ -1,7 +1,7 @@
 // Backfill missing PM + Router sessions for the funded EOA.
 //
 // The original delegation flow only landed 2/4 registerSession POSTs for
-// 0x56b586d5...7012 (likely a UI race during the Safe→7702 pivot). Since
+// 0x56b586d5...7012 (likely a UI race during the EIP-7702 pivot). Since
 // the user already signed a typed-data delegation message authorising all
 // 4 agents, the policy hash is the same — we just need to materialise the
 // rows for pm and router so the tick loop sees this EOA.
@@ -14,17 +14,17 @@ loadEnv({ path: path.resolve(here, '..', '.env') });
 
 import { PrismaClient } from '@prisma/client';
 
-const SAFE = '0x56b586d5476efa2d1f2375904be62833c8c17012';
+const WALLET = '0x56b586d5476efa2d1f2375904be62833c8c17012';
 // Reuse the policy hash + validUntil from the existing alm/executor rows
 // so the row tells the same story (same delegation).
 const db = new PrismaClient();
 
 async function main() {
   const existing = await db.session.findMany({
-    where: { safeAddress: SAFE, validUntil: { gt: new Date() } },
+    where: { walletAddress: WALLET, validUntil: { gt: new Date() } },
   });
   if (existing.length === 0) {
-    console.error(`No active sessions for ${SAFE} — re-run delegation in UI.`);
+    console.error(`No active sessions for ${WALLET} — re-run delegation in UI.`);
     process.exit(1);
   }
   const template = existing[0]!;
@@ -42,9 +42,9 @@ async function main() {
     // template's session address is fine for demo. In prod the UI signs
     // a per-agent key.
     await db.session.upsert({
-      where: { safeAddress_agent: { safeAddress: SAFE, agent } },
+      where: { walletAddress_agent: { walletAddress: WALLET, agent } },
       create: {
-        safeAddress: SAFE,
+        walletAddress: WALLET,
         agent,
         sessionAddress: template.sessionAddress,
         policyHash: template.policyHash,
@@ -57,7 +57,7 @@ async function main() {
 
   // Make sure the user row has chains set so PM resolves the right chain.
   await db.user.update({
-    where: { safeAddress: SAFE },
+    where: { walletAddress: WALLET },
     data: { chains: 'mainnet' },
   });
   console.log(`+ user.chains = mainnet`);

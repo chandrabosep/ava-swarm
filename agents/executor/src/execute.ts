@@ -25,22 +25,26 @@ import { quote } from './uniswap.js';
 import { submitJob, waitForJob } from './keeperhub.js';
 import { loadExecutorSession } from './sessions.js';
 
+// Mock-execution gate. Default false — we want REAL execution on
+// every chain, including testnets. Set EXECUTOR_MOCK=true only when
+// you explicitly want to short-circuit Uniswap + KeeperHub for a
+// pure-UI demo (e.g. recording a video without funding the KH wallet).
 const MOCK = (process.env.EXECUTOR_MOCK ?? '').toLowerCase() === 'true';
 
 export interface ExecuteParams {
   ctx: AgentContext;
   intentId: string;
-  safeAddress: `0x${string}`;
+  walletAddress: `0x${string}`;
   intent: RoutedIntent;
 }
 
 export async function execute({
   ctx,
   intentId,
-  safeAddress,
+  walletAddress,
   intent,
 }: ExecuteParams): Promise<void> {
-  const log = ctx.log.child({ intentId, safeAddress });
+  const log = ctx.log.child({ intentId, walletAddress });
 
   await db().intent.update({
     where: { id: intentId },
@@ -62,7 +66,7 @@ export async function execute({
     });
     await db().event.create({
       data: {
-        safeAddress,
+        walletAddress,
         agent: 'executor',
         kind: 'intent.executed',
         payload: { intentId, txHash, mock: true },
@@ -80,7 +84,7 @@ export async function execute({
         topic: TOPICS.executorReceipt,
         payload: {
           fromAgent: 'executor',
-          safeAddress,
+          walletAddress,
           ts: Date.now(),
           payload: receipt,
         },
@@ -93,9 +97,25 @@ export async function execute({
 
   try {
     // 1. Session
-    const session = await loadExecutorSession(safeAddress);
+    const session = await loadExecutorSession(walletAddress);
     if (!session) {
-      throw new Error('No active Executor session for this Safe.');
+      throw new Error('No active Executor session for this wallet.');
+    }
+
+    // 1b. Sanity-check tokens against chain. Stale intents from before
+    //     the chain rename can have chain='sepolia' but tokenIn=mainnet
+    //     USDC address, which 100% can't execute. Fail fast with a
+    //     clear message instead of letting KH return an opaque
+    //     "balance 0" error.
+    if (!isAddressOnChain(intent.tokenIn, intent.chain)) {
+      throw new Error(
+        `Token ${intent.tokenIn} is not a known address on chain ${intent.chain}. Stale intent — re-run cleanup-fake-executed.ts.`,
+      );
+    }
+    if (!isAddressOnChain(intent.tokenOut, intent.chain)) {
+      throw new Error(
+        `Token ${intent.tokenOut} is not a known address on chain ${intent.chain}. Stale intent.`,
+      );
     }
 
     // 2. Quote — Trading API builds a route assuming `swapper` is the
@@ -108,14 +128,14 @@ export async function execute({
     log.info('quoting');
     const keeperhubWallet =
       (process.env.KEEPERHUB_WALLET_ADDRESS as `0x${string}` | undefined) ??
-      safeAddress;
+      walletAddress;
     const swap = await quote({
       chain: intent.chain,
       tokenIn: intent.tokenIn as `0x${string}`,
       tokenOut: intent.tokenOut as `0x${string}`,
       amountIn: intent.amountIn,
       swapper: keeperhubWallet,
-      recipient: safeAddress,
+      recipient: walletAddress,
     });
 
     // 4. Sign. We sign the keccak256 of (to, data, value, intentId) as a
@@ -141,7 +161,7 @@ export async function execute({
     log.info('submitting to keeperhub');
     const { jobId } = await submitJob({
       chain: intent.chain,
-      smartAccount: safeAddress,
+      smartAccount: walletAddress,
       to: swap.to,
       data: swap.data,
       value: swap.value,
@@ -151,16 +171,26 @@ export async function execute({
         tokenIn: intent.tokenIn as `0x${string}`,
         tokenOut: intent.tokenOut as `0x${string}`,
         amountIn: intent.amountIn,
-        recipient: safeAddress,
+        recipient: walletAddress,
       },
     });
     log.info('keeperhub job created', { jobId });
 
-    // 6. Wait + record
+    // 6. Wait + record. Defensive: KH has been observed to return
+    //    status=completed with `transactionHash: ""` or `transactionHash`
+    //    that's a stub like "0x" (race between job-completion event and
+    //    its tx-hash indexer). Reject anything that isn't a full
+    //    32-byte hex hash so we never write `executed` without a real
+    //    onchain receipt.
     const final = await waitForJob(jobId);
-    if (final.status !== 'mined' || !final.txHash) {
+    const looksLikeRealTx =
+      typeof final.txHash === 'string' &&
+      /^0x[0-9a-fA-F]{64}$/.test(final.txHash);
+    if (final.status !== 'mined' || !looksLikeRealTx) {
       throw new Error(
-        `KeeperHub job ${jobId} terminal status=${final.status} ${final.error ?? ''}`,
+        `KeeperHub job ${jobId} terminal status=${final.status} txHash=${
+          final.txHash ?? '∅'
+        } ${final.error ?? ''}`,
       );
     }
 
@@ -178,7 +208,7 @@ export async function execute({
     };
     await db().event.create({
       data: {
-        safeAddress,
+        walletAddress,
         agent: 'executor',
         kind: 'intent.executed',
         payload: { intentId, txHash: final.txHash, jobId },
@@ -187,7 +217,7 @@ export async function execute({
 
     const msg: SwarmMessage<ExecutionReceipt> = {
       fromAgent: 'executor',
-      safeAddress,
+      walletAddress,
       ts: Date.now(),
       payload: receipt,
     };
@@ -202,7 +232,7 @@ export async function execute({
     });
     await db().event.create({
       data: {
-        safeAddress,
+        walletAddress,
         agent: 'executor',
         kind: 'intent.failed',
         payload: { intentId, message },
@@ -217,11 +247,17 @@ export async function execute({
     await ctx.axl
       .publish({
         topic: TOPICS.executorReceipt,
-        payload: { fromAgent: 'executor', safeAddress, ts: Date.now(), payload: receipt },
+        payload: { fromAgent: 'executor', walletAddress, ts: Date.now(), payload: receipt },
       })
       .catch(() => {
         // best-effort
       });
+    // CRITICAL: re-throw so intent-poll knows the handler failed and
+    // doesn't overwrite our `failed` status with `executed`. Without
+    // this, every onchain failure (insufficient balance, no liquidity,
+    // KH error) would silently appear as an "executed" intent with no
+    // txHash — which is misleading and worse than just showing failure.
+    throw err;
   }
 }
 
@@ -234,4 +270,44 @@ function synthTxHash(intentId: string): string {
   return keccak256(
     encodePacked(['string', 'string'], ['mock-tx', intentId]),
   );
+}
+
+// Hardcoded set of token addresses we expect on each supported chain.
+// Mirrors the Router's TOKENS map but kept independent so the executor
+// stays decoupled. Pseudo-ETH (0x000…000) is always valid.
+const KNOWN_TOKENS: Record<string, string[]> = {
+  mainnet: [
+    '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599',
+    '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    '0x1f9840a85d5af5bf1d1762f925bdaddc4201f984',
+  ],
+  base: [
+    '0x4200000000000000000000000000000000000006',
+    '0x0555e30da8f98308edb960aa94c0db47230d2b9c',
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    '0xc3de830ea07524a0761646a6a4e4be0e114a3c83',
+  ],
+  unichain: [
+    '0x4200000000000000000000000000000000000006',
+    '0x0555e30da8f98308edb960aa94c0db47230d2b9c',
+    '0x078d782b760474a361dda0af3839290b0ef57ad6',
+    '0x8f187aa05619a017077f5308904739877ce9ea21',
+  ],
+  sepolia: [
+    '0xfff9976782d46cc05630d1f6ebab18b2324d6b14',
+    '0x29f2d40b0605204364af54ec677bd022da425d03',
+    '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238',
+    '0x1f9840a85d5af5bf1d1762f925bdaddc4201f984',
+  ],
+  'base-sepolia': [
+    '0x4200000000000000000000000000000000000006',
+    '0x036cbd53842c5426634e7929541ec2318f3dcf7e',
+  ],
+};
+
+function isAddressOnChain(addr: string, chain: string): boolean {
+  const lower = addr.toLowerCase();
+  if (lower === '0x0000000000000000000000000000000000000000') return true;
+  return (KNOWN_TOKENS[chain] ?? []).includes(lower);
 }

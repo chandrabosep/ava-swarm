@@ -13,65 +13,120 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: path.resolve(here, '..', '.env') });
 
-import { createPublicClient, formatEther, formatUnits, http, erc20Abi } from 'viem';
-import { mainnet } from 'viem/chains';
+import {
+  createPublicClient,
+  formatEther,
+  formatUnits,
+  http,
+  erc20Abi,
+  type Address,
+} from 'viem';
+import { base, baseSepolia, mainnet, sepolia } from 'viem/chains';
 import { getKeeperhubWalletAddress } from '../executor/src/onchain.js';
 
-const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const;
-const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' as const;
-const SR02_OLD = '0xE592427A0AEce92De3Edee1F18E0157C05861564' as const;
-const SR02_NEW = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45' as const;
-// Uniswap V3 SwapRouter (the one V3 frontend uses) — separate from the two above.
-const SR_V3 = '0xE592427A0AEce92De3Edee1F18E0157C05861564' as const;
-// Universal Router (Uniswap's preferred entry-point for V3+V4 + permit).
-const UNIVERSAL_ROUTER = '0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af' as const;
+interface ChainCfg {
+  name: string;
+  chain: typeof mainnet | typeof sepolia | typeof base | typeof baseSepolia;
+  rpc: string;
+  weth: Address;
+  usdc: Address;
+  routers: { name: string; addr: Address }[];
+}
+
+const CHAINS: ChainCfg[] = [
+  {
+    name: 'mainnet',
+    chain: mainnet,
+    rpc: process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com',
+    weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+    usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    routers: [
+      { name: 'SwapRouter ', addr: '0xE592427A0AEce92De3Edee1F18E0157C05861564' },
+      { name: 'SwapRouter02', addr: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45' },
+      { name: 'UniversalRtr', addr: '0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af' },
+    ],
+  },
+  {
+    name: 'sepolia',
+    chain: sepolia,
+    rpc:
+      process.env.SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia.publicnode.com',
+    weth: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+    usdc: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+    routers: [
+      // Uniswap V3 on Sepolia — addresses from Uniswap's official deployments.
+      { name: 'SwapRouter02', addr: '0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E' },
+      { name: 'UniversalRtr', addr: '0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b' },
+    ],
+  },
+  {
+    name: 'base-sepolia',
+    chain: baseSepolia,
+    rpc:
+      process.env.BASE_SEPOLIA_RPC_URL ??
+      'https://base-sepolia.publicnode.com',
+    weth: '0x4200000000000000000000000000000000000006',
+    usdc: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    routers: [
+      { name: 'SwapRouter02', addr: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4' },
+      { name: 'UniversalRtr', addr: '0x95273d871c8156636e114b63797d78D7E1720d81' },
+    ],
+  },
+];
+
+async function probeChain(cfg: ChainCfg, wallet: Address): Promise<void> {
+  const c = createPublicClient({ chain: cfg.chain, transport: http(cfg.rpc) });
+  console.log(`\n=== ${cfg.name.toUpperCase()} ===`);
+  try {
+    const [eth, weth, usdc] = await Promise.all([
+      c.getBalance({ address: wallet }),
+      c.readContract({
+        address: cfg.weth,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [wallet],
+      }),
+      c.readContract({
+        address: cfg.usdc,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [wallet],
+      }),
+    ]);
+    console.log(`  ETH:  ${formatEther(eth)}`);
+    console.log(`  WETH: ${formatEther(weth as bigint)}`);
+    console.log(`  USDC: ${formatUnits(usdc as bigint, 6)}`);
+
+    const allowances = await Promise.all(
+      cfg.routers.map((r) =>
+        c.readContract({
+          address: cfg.weth,
+          abi: erc20Abi,
+          functionName: 'allowance',
+          args: [wallet, r.addr],
+        }),
+      ),
+    );
+    console.log(`  WETH allowances:`);
+    for (let i = 0; i < cfg.routers.length; i++) {
+      const a = allowances[i] as bigint;
+      const human =
+        a > 10n ** 30n ? '∞ (max)' : a === 0n ? '0' : formatEther(a);
+      console.log(`    → ${cfg.routers[i].name}: ${human}`);
+    }
+  } catch (err) {
+    console.log(
+      `  (probe failed: ${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+}
 
 async function main() {
-  const rpc = process.env.MAINNET_RPC_URL ?? 'https://ethereum.publicnode.com';
-  const c = createPublicClient({ chain: mainnet, transport: http(rpc) });
-
   const wallet = await getKeeperhubWalletAddress();
-  console.log(`Resolved KH wallet via MCP: ${wallet}\n`);
+  console.log(`Resolved KH wallet via MCP: ${wallet}`);
 
-  const [eth, wethBal, usdcBal, allowSrOld, allowSrNew, allowUR] = await Promise.all([
-    c.getBalance({ address: wallet }),
-    c.readContract({ address: WETH, abi: erc20Abi, functionName: 'balanceOf', args: [wallet] }),
-    c.readContract({ address: USDC, abi: erc20Abi, functionName: 'balanceOf', args: [wallet] }),
-    c.readContract({ address: WETH, abi: erc20Abi, functionName: 'allowance', args: [wallet, SR02_OLD] }),
-    c.readContract({ address: WETH, abi: erc20Abi, functionName: 'allowance', args: [wallet, SR02_NEW] }),
-    c.readContract({ address: WETH, abi: erc20Abi, functionName: 'allowance', args: [wallet, UNIVERSAL_ROUTER] }),
-  ]);
-
-  console.log(`Balances:`);
-  console.log(`  ETH:  ${formatEther(eth)}`);
-  console.log(`  WETH: ${formatEther(wethBal as bigint)}`);
-  console.log(`  USDC: ${formatUnits(usdcBal as bigint, 6)}\n`);
-  console.log(`WETH allowances (which router does KH actually use?):`);
-  console.log(`  → SwapRouter   (0xE592…1564): ${formatEther(allowSrOld as bigint)}`);
-  console.log(`  → SwapRouter02 (0x68b3…Fc45): ${formatEther(allowSrNew as bigint)}`);
-  console.log(`  → UniversalRtr (0x66a9…D8Af): ${formatEther(allowUR as bigint)}\n`);
-
-  const wethEth = parseFloat(formatEther(wethBal as bigint));
-  const sumAllow =
-    Number(allowSrOld as bigint) +
-    Number(allowSrNew as bigint) +
-    Number(allowUR as bigint);
-  if (wethEth < 0.0005) {
-    console.log(`⚠️  WETH balance < 0.0005 — wrap-on-the-fly will need to top up.`);
-  } else {
-    console.log(`✓ WETH balance ${wethEth} is enough for typical demo swaps.`);
-  }
-  if (sumAllow === 0) {
-    console.log(`⚠️  ZERO allowance on every router candidate.`);
-    console.log(`   Whichever one KH uses internally needs a fresh approve.`);
-  } else {
-    const which =
-      (allowSrOld as bigint) > 0n
-        ? 'SwapRouter'
-        : (allowSrNew as bigint) > 0n
-          ? 'SwapRouter02'
-          : 'UniversalRouter';
-    console.log(`✓ KH appears to use: ${which} (non-zero WETH allowance there).`);
+  for (const cfg of CHAINS) {
+    await probeChain(cfg, wallet);
   }
 }
 

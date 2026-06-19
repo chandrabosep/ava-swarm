@@ -6,6 +6,7 @@
 
 import {
   bootAgent,
+  env,
   startHeartbeat,
   startIntentPoll,
   TOPICS,
@@ -14,6 +15,34 @@ import {
   type SwarmMessage,
 } from '@swarm/shared';
 import { execute } from './execute.js';
+
+const TESTNET_CHAINS = new Set(['sepolia', 'base-sepolia']);
+
+/** Hard guard: drop any RoutedIntent that doesn't match the testnet
+ *  policy. Stale rows from a prior mainnet config or a renegade router
+ *  process get marked failed instead of being executed. */
+async function rejectMainnetIfTestnet(
+  intentId: string,
+  intent: RoutedIntent,
+  reason: string,
+  log: (level: 'info' | 'warn' | 'error', msg: string, meta?: object) => void,
+): Promise<boolean> {
+  if (!env.useTestnet()) return false;
+  if (TESTNET_CHAINS.has(intent.chain)) return false;
+  log('error', 'executor refusing mainnet intent under USE_TESTNET', {
+    intentId,
+    chain: intent.chain,
+    reason,
+  });
+  // Mark failed so it stops cycling through the poll.
+  await db()
+    .intent.update({
+      where: { id: intentId },
+      data: { status: 'failed' },
+    })
+    .catch(() => {});
+  return true; // signals "rejected"
+}
 
 async function main() {
   const ctx = await bootAgent('executor');
@@ -75,10 +104,17 @@ async function main() {
     handle: async (row) => {
       const intent = row.payload;
       if (!intent) return;
+      const rejected = await rejectMainnetIfTestnet(
+        row.id,
+        intent,
+        'db-poll',
+        (level, msg, meta) => ctx.log[level](msg, meta),
+      );
+      if (rejected) return;
       await execute({
         ctx,
         intentId: row.id,
-        safeAddress: row.safeAddress as `0x${string}`,
+        walletAddress: row.walletAddress as `0x${string}`,
         intent,
       });
     },
@@ -88,17 +124,27 @@ async function main() {
     for await (const msg of ctx.axl.subscribe<SwarmMessage<RoutedIntent>>(
       TOPICS.routerRouted,
     )) {
-      const env = msg.payload;
-      if (!env || !env.payload) continue;
+      const envelope = msg.payload;
+      if (!envelope || !envelope.payload) continue;
 
-      const intent = env.payload;
-      const safeAddress = env.safeAddress as `0x${string}`;
+      const intent = envelope.payload;
+      const walletAddress = envelope.walletAddress as `0x${string}`;
+
+      // Reject before persisting so a renegade publisher can't pollute
+      // the DB with mainnet rows under USE_TESTNET=true.
+      if (env.useTestnet() && !TESTNET_CHAINS.has(intent.chain)) {
+        ctx.log.error(
+          'executor refusing mainnet intent over AXL under USE_TESTNET',
+          { chain: intent.chain, walletAddress },
+        );
+        continue;
+      }
 
       // Persist before we touch any external service so we have an audit
       // trail even if KeeperHub explodes mid-call.
       const row = await db().intent.create({
         data: {
-          safeAddress,
+          walletAddress,
           fromAgent: 'router',
           payload: intent as unknown as object,
           status: 'pending',
@@ -107,7 +153,7 @@ async function main() {
 
       // Fire and forget — execute() handles its own errors and writes
       // the final state back to DB.
-      void execute({ ctx, intentId: row.id, safeAddress, intent }).catch(
+      void execute({ ctx, intentId: row.id, walletAddress, intent }).catch(
         (err) =>
           ctx.log.error('unhandled execute error', {
             err: err instanceof Error ? err.message : String(err),

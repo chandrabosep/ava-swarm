@@ -4,22 +4,16 @@
 // Output: AllocationIntent — target weights per symbol, with a tolerance.
 //
 // Provider is selected by env.llmProvider():
-//   groq   — Groq's hosted Llama/Qwen/Mixtral (default). Plain JSON-mode
-//            chat completion, no tool use.
+//   groq   — Groq's hosted Llama/Qwen/Mixtral (default).
 //   hermes — Nous Research Hermes via Nous Portal, or any OpenAI-compatible
-//            hermes-agent endpoint (HERMES_BASE_URL override). When a Skill
-//            is installed via the connector, its SKILL.md is injected into
-//            the system prompt and a `call_skill_api` tool is exposed so
-//            the model can fetch live context before deciding. The skill's
-//            API key never enters the prompt — it's attached server-side
-//            in invokeCallSkillApi() to outbound requests on the skill's
-//            host allowlist.
+//            hermes-agent endpoint (HERMES_BASE_URL override).
 //
-// The system prompt encodes:
-//   - the user's risk policy (max drawdown per day, max single position, …)
-//   - the universe of allowed tokens (for Phase B-1 we hardcode)
-//   - the requirement to return strictly JSON in a known schema
-//   - (hermes + installed skill) the SKILL.md body and host allowlist
+// Skill use: when one or more skills are installed for this agent role
+// (see agents/api/src/skills.ts for the install/register flow), we
+// inject every skill's SKILL.md into the system prompt and expose a
+// single `call_skill_api` tool. The model picks which skill to call via
+// the tool's `skill` argument. Each skill's API key is attached server-
+// side in invokeCallSkillApi(), so the LLM never sees credentials.
 //
 // We tolerate the occasional non-JSON response by wrapping in an
 // extract-JSON-from-text fallback.
@@ -30,19 +24,18 @@ import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
 import { profileFor, type RiskProfile } from './profiles.js';
 import {
-  buildSkillSystemSection,
-  callSkillApiTool,
+  buildSkillTool,
+  buildSkillsSystemSection,
   invokeCallSkillApi,
-  loadInstalledSkill,
+  loadSkillsForAgent,
   type InstalledSkill,
 } from './skill.js';
 
-const ALLOWED_TOKENS = ['ETH', 'WBTC', 'USDC', 'UNI'] as const;
 /** How many tool-call rounds we let the model run before forcing a JSON answer. */
 const MAX_TOOL_TURNS = 4;
 
 export interface DecideParams {
-  safeAddress: string;
+  walletAddress: string;
   snapshot: PortfolioSnapshot;
   /** Soft rebalance threshold — Router only acts on diffs > this. */
   toleranceBps: number;
@@ -89,22 +82,21 @@ function buildSystemPrompt(profile: RiskProfile): string {
   const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
   return `${cfg.persona}
 
-Your job is to propose a target allocation across the allowed token
-universe given the user's current portfolio. You output JSON ONLY,
-matching this schema:
+Your job is to propose a target allocation given the user's current
+portfolio. You output JSON ONLY, matching this schema:
 
 {
   "rationale": "<2-3 sentence explanation>",
   "targets": [
-    { "symbol": "ETH",  "weight": 0.40 },
-    { "symbol": "USDC", "weight": 0.45 },
-    { "symbol": "WBTC", "weight": 0.15 }
+    { "symbol": "ETH",  "weight": 0.60 },
+    { "symbol": "USDC", "weight": 0.30 },
+    { "symbol": "WBTC", "weight": 0.10 }
   ]
 }
 
 Rules:
-1. Allowed symbols: ${ALLOWED_TOKENS.join(', ')}.
-2. weights sum to exactly 1.0.
+1. Pick any tokens you think fit the strategy. No fixed universe.
+2. Weights sum to exactly 1.0.
 3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
 4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
 5. Move at most ${cfg.maxShiftPerTick.toFixed(2)} (${shiftPct}%) in absolute
@@ -121,14 +113,14 @@ export async function decideAllocation(
   const userPrompt = buildUserPrompt(params);
   const baseSystem = buildSystemPrompt(params.riskProfile ?? 'balanced');
 
-  // Skill use is gated on Hermes — Groq's hosted models don't get the
-  // SKILL.md or the tool. (We could expose tools to Groq too, but the
-  // skill-driven flow is the differentiator we're shipping for Hermes.)
-  const skill = llm.provider === 'hermes' ? await loadInstalledSkill() : null;
+  // Skills are agent-role-scoped (see agents/api/src/skills.ts and the
+  // `skills` table). We expose them to whichever LLM PM is using —
+  // Groq and Hermes both speak OpenAI-compatible tool calls.
+  const skills = await loadSkillsForAgent('pm');
 
   const text =
-    skill && skill.allowedHosts.length > 0
-      ? await runWithSkillTools(client, llm.model, baseSystem, userPrompt, skill)
+    skills.length > 0
+      ? await runWithSkillTools(client, llm.model, baseSystem, userPrompt, skills)
       : await runPlainJson(client, llm.model, baseSystem, userPrompt);
 
   const parsed = extractJson(text) as {
@@ -140,20 +132,29 @@ export async function decideAllocation(
     throw new Error(`PM LLM returned no targets: ${text.slice(0, 200)}`);
   }
 
-  // Defensive normalization — clamp to allowed universe, renormalize sum.
-  const filtered = parsed.targets.filter((t) =>
-    (ALLOWED_TOKENS as readonly string[]).includes(t.symbol),
-  );
-  const sum = filtered.reduce((s, t) => s + t.weight, 0);
+  // Renormalize weights to sum to 1.0 (LLM might emit slightly off
+  // sums) and uppercase symbols for downstream matching. No symbol
+  // filtering — PM proposes whatever the LLM picks; Router decides
+  // whether it can resolve an address for that symbol on the target
+  // chain.
+  const cleaned = parsed.targets
+    .filter((t) => typeof t.symbol === 'string' && t.weight > 0)
+    .map((t) => ({ symbol: t.symbol.toUpperCase(), weight: t.weight }));
+  const sum = cleaned.reduce((s, t) => s + t.weight, 0);
   const targets =
     sum > 0
-      ? filtered.map((t) => ({ symbol: t.symbol, weight: t.weight / sum }))
+      ? cleaned.map((t) => ({ symbol: t.symbol, weight: t.weight / sum }))
       : [];
 
   return {
     kind: 'allocation',
     targets,
     toleranceBps: params.toleranceBps,
+    // Surface the LLM's reasoning to the dashboard activity feed —
+    // users want to see *why* the swarm is rebalancing, not just that
+    // it is. The risk-profile badge is rendered next to it.
+    rationale: parsed.rationale,
+    profile: params.riskProfile,
   };
 }
 
@@ -182,24 +183,25 @@ async function runPlainJson(
 }
 
 /**
- * Hermes + skill: run a tool-calling loop. The model can call the skill's
- * HTTP API a few times to gather context, then must emit the allocation
- * JSON. We bound the loop at MAX_TOOL_TURNS and on the final pass strip
- * tools + force JSON-mode so the model can't stall indefinitely.
+ * Skills installed: run a tool-calling loop. The model can call any
+ * installed skill's HTTP API to gather context (social signals, market
+ * commentary, etc), then emit the allocation JSON. We bound the loop at
+ * MAX_TOOL_TURNS and on the final pass strip tools + force JSON-mode so
+ * the model can't stall indefinitely.
  */
 async function runWithSkillTools(
   client: OpenAI,
   model: string,
   baseSystem: string,
   user: string,
-  skill: InstalledSkill,
+  skills: InstalledSkill[],
 ): Promise<string> {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: baseSystem },
-    { role: 'system', content: buildSkillSystemSection(skill) },
+    { role: 'system', content: buildSkillsSystemSection(skills) },
     { role: 'user', content: user },
   ];
-  const tools = [callSkillApiTool(skill)];
+  const tools = [buildSkillTool(skills)];
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const res = await client.chat.completions.create({
@@ -231,7 +233,7 @@ async function runWithSkillTools(
     const results = await Promise.all(
       calls.map((tc) =>
         tc.type === 'function' && tc.function.name === 'call_skill_api'
-          ? invokeCallSkillApi(skill, tc.function.arguments)
+          ? invokeCallSkillApi(skills, tc.function.arguments)
           : Promise.resolve({
               ok: false,
               error: `unknown tool: ${tc.type === 'function' ? tc.function.name : tc.type}`,
@@ -265,9 +267,9 @@ async function runWithSkillTools(
 }
 
 function buildUserPrompt(params: DecideParams): string {
-  const { snapshot, safeAddress, toleranceBps, context } = params;
+  const { snapshot, walletAddress, toleranceBps, context } = params;
   const lines = [
-    `Safe address: ${safeAddress}`,
+    `Safe address: ${walletAddress}`,
     `Total value: $${snapshot.totalValueUsd.toFixed(2)}`,
     `24h change: ${snapshot.change24hPct.toFixed(2)}% ($${snapshot.change24hUsd.toFixed(2)})`,
     `Tolerance: ${(toleranceBps / 100).toFixed(2)}% — ignore deltas smaller than this.`,

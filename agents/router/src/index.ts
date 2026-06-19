@@ -12,6 +12,7 @@
 import {
   bootAgent,
   db,
+  env,
   startHeartbeat,
   startIntentPoll,
   TOPICS,
@@ -31,14 +32,42 @@ import {
   lookForMatch,
   settleMatch,
 } from './otc.js';
+import { preflightEnabled, preflightSwaps } from './preflight.js';
+import { startDebateListener } from './debate.js';
 
 /** Phase B-1: settle every intent on the user's primary chain. Override
- *  with PRIMARY_CHAIN env if you need to demo on a different chain. */
-const PRIMARY_CHAIN: SupportedChain =
-  (process.env.PRIMARY_CHAIN as SupportedChain | undefined) ?? 'mainnet';
+ *  with PRIMARY_CHAIN env if you need to demo on a different chain.
+ *  When USE_TESTNET=true we HARD-OVERRIDE to a testnet chain even if
+ *  PRIMARY_CHAIN was misconfigured to mainnet — shipping mainnet
+ *  swaps from a testnet build is the worst kind of footgun and trashes
+ *  the dashboard with phantom mainnet rows. */
+const TESTNET_CHAINS: SupportedChain[] = ['sepolia', 'base-sepolia'];
+const PRIMARY_CHAIN: SupportedChain = (() => {
+  const fromEnv = process.env.PRIMARY_CHAIN as SupportedChain | undefined;
+  if (env.useTestnet()) {
+    // If the env explicitly named a testnet, honor it. Otherwise force sepolia.
+    if (fromEnv && TESTNET_CHAINS.includes(fromEnv)) return fromEnv;
+    if (fromEnv && !TESTNET_CHAINS.includes(fromEnv)) {
+      console.warn(
+        `[router] USE_TESTNET=true but PRIMARY_CHAIN=${fromEnv} is a mainnet chain. Forcing 'sepolia'.`,
+      );
+    }
+    return 'sepolia';
+  }
+  return fromEnv ?? 'mainnet';
+})();
 
 async function main() {
   const ctx = await bootAgent('router');
+  // Print the resolved settle chain at startup. If you see "mainnet"
+  // here under USE_TESTNET=true, my hard-override didn't run — meaning
+  // tsx watch is serving stale code. Hard-restart with a fresh
+  // `pkill -f tsx`.
+  ctx.log.info('chain config', {
+    primaryChain: PRIMARY_CHAIN,
+    useTestnet: env.useTestnet(),
+    primaryChainEnv: process.env.PRIMARY_CHAIN ?? '(unset)',
+  });
   const stopHeartbeat = startHeartbeat(ctx);
 
   // PM allocation inbox — three transports racing for the same intent:
@@ -49,20 +78,54 @@ async function main() {
   // the row pending→netted in a single SQL statement; losers no-op.
   const claimAndHandle = async (
     transport: 'axl' | 'pg' | 'db-poll',
-    safeAddress: string,
+    walletAddress: string | undefined,
     intentId: string | undefined,
     payload: AllocationIntent,
   ) => {
+    // If the gossip envelope is missing walletAddress (older message
+    // shape, transport quirk, JSON.stringify dropping `undefined` keys),
+    // recover by reading the persisted Intent row — its walletAddress
+    // column is non-null by schema, so as long as the publisher wrote
+    // the row before notifying we can resync from there.
+    if (!walletAddress && intentId) {
+      try {
+        const row = await db().intent.findUnique({
+          where: { id: intentId },
+          select: { walletAddress: true },
+        });
+        if (row?.walletAddress) {
+          walletAddress = row.walletAddress;
+          ctx.log.info(`allocation walletAddress recovered from DB`, {
+            transport,
+            intentId,
+          });
+        }
+      } catch (err) {
+        ctx.log.warn('walletAddress recovery query failed', {
+          intentId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // Still nothing — this is a true orphan (no intentId or row gone).
+    // Drop quietly so we don't crash Prisma downstream.
+    if (!walletAddress) {
+      ctx.log.warn('allocation dropped — missing walletAddress', {
+        transport,
+        intentId,
+      });
+      return;
+    }
     if (intentId) {
       const claimed = await claimIntent(intentId);
       if (!claimed) return; // another transport got there first
     }
     ctx.log.info(`allocation received via ${transport}`, {
-      safeAddress,
+      walletAddress,
       intentId,
     });
     try {
-      await handleAllocation(ctx, safeAddress, payload);
+      await handleAllocation(ctx, walletAddress, payload);
     } catch (err) {
       ctx.log.warn('allocation handler failed', {
         err: err instanceof Error ? err.message : String(err),
@@ -75,9 +138,14 @@ async function main() {
     for await (const msg of ctx.axl.subscribe<SwarmMessage<AllocationIntent>>(
       TOPICS.pmAllocation,
     )) {
-      const env = msg.payload;
-      if (!env || env.payload?.kind !== 'allocation') continue;
-      await claimAndHandle('axl', env.safeAddress, env.intentId, env.payload);
+      const envelope = msg.payload;
+      if (!envelope || envelope.payload?.kind !== 'allocation') continue;
+      await claimAndHandle(
+        'axl',
+        envelope.walletAddress,
+        envelope.intentId,
+        envelope.payload,
+      );
     }
   })();
 
@@ -86,9 +154,14 @@ async function main() {
     for await (const msg of ctx.pg.subscribe<SwarmMessage<AllocationIntent>>(
       TOPICS.pmAllocation,
     )) {
-      const env = msg.payload;
-      if (!env || env.payload?.kind !== 'allocation') continue;
-      await claimAndHandle('pg', env.safeAddress, env.intentId, env.payload);
+      const envelope = msg.payload;
+      if (!envelope || envelope.payload?.kind !== 'allocation') continue;
+      await claimAndHandle(
+        'pg',
+        envelope.walletAddress,
+        envelope.intentId,
+        envelope.payload,
+      );
     }
   })();
 
@@ -104,25 +177,30 @@ async function main() {
     handle: async (row) => {
       if (row.payload?.kind !== 'allocation') return;
       ctx.log.info('allocation received via db-poll', {
-        safeAddress: row.safeAddress,
+        walletAddress: row.walletAddress,
         intentId: row.id,
       });
-      await handleAllocation(ctx, row.safeAddress, row.payload);
+      await handleAllocation(ctx, row.walletAddress, row.payload);
     },
   });
 
   // OTC peer advert inbox — runs continuously, attempts cross-tenant matches.
   void consumeAdverts(ctx);
 
+  // Debate listener — pushes back on PM drafts that propose symbols
+  // we can't route on the primary chain.
+  const stopDebate = startDebateListener(ctx, { primaryChain: PRIMARY_CHAIN });
+  void stopDebate;
+
   // ALM rebalance inbox
   void (async () => {
     for await (const msg of ctx.axl.subscribe<SwarmMessage<RebalanceIntent>>(
       TOPICS.almRebalance,
     )) {
-      const env = msg.payload;
-      if (!env || env.payload?.kind !== 'rebalance') continue;
+      const envelope = msg.payload;
+      if (!envelope || envelope.payload?.kind !== 'rebalance') continue;
       try {
-        await handleRebalance(ctx, env.safeAddress, env.payload);
+        await handleRebalance(ctx, envelope.walletAddress, envelope.payload);
       } catch (err) {
         ctx.log.warn('rebalance handler failed', {
           err: err instanceof Error ? err.message : String(err),
@@ -133,8 +211,8 @@ async function main() {
 
   ctx.log.info('ready', {
     role: 'router',
-    publishes: TOPICS.routerRouted,
-    listens: [TOPICS.pmAllocation, TOPICS.almRebalance],
+    publishes: [TOPICS.routerRouted, TOPICS.routerFeedback],
+    listens: [TOPICS.pmAllocation, TOPICS.almRebalance, TOPICS.pmDraft],
   });
 
   process.stdin.resume();
@@ -143,28 +221,53 @@ async function main() {
 
 async function handleAllocation(
   ctx: AgentContext,
-  safeAddress: string,
+  walletAddress: string,
   intent: AllocationIntent,
 ): Promise<void> {
-  const current = await currentSlices(safeAddress);
-  const swaps = decompose(intent, current, PRIMARY_CHAIN);
+  const current = await currentSlices(walletAddress);
+  let swaps = decompose(intent, current, PRIMARY_CHAIN, (msg, meta) =>
+    ctx.log.warn(msg, meta),
+  );
   if (swaps.length === 0) {
-    ctx.log.info('within tolerance — no swaps', { safeAddress });
+    ctx.log.info('within tolerance — no swaps', { walletAddress });
     return;
   }
+
+  // Pre-flight against the KH wallet — drop swaps it can't supply,
+  // resize the rest to the available balance. Default-on under
+  // USE_TESTNET so faucet-funded KH wallets stop spamming FAILED
+  // chips for swaps that were never feasible.
+  if (preflightEnabled()) {
+    const pre = await preflightSwaps(swaps, (msg, meta) =>
+      ctx.log.info(msg, meta),
+    );
+    for (const d of pre.dropped) {
+      ctx.log.warn('preflight dropped swap', {
+        pair: `${d.swap.tokenInSymbol}->${d.swap.tokenOutSymbol}`,
+        notionalUsd: d.swap.notionalUsd,
+        reason: d.reason,
+      });
+    }
+    swaps = pre.swaps;
+    if (swaps.length === 0) {
+      ctx.log.info('preflight — no executable swaps', { walletAddress });
+      return;
+    }
+  }
+
   for (const swap of swaps) {
     // Try internal OTC match first. If a peer Router on the AXL mesh
-    // has an opposing intent at compatible size, settle Safe-to-Safe
+    // has an opposing intent at compatible size, settle wallet-to-wallet
     // and skip Uniswap entirely. Falls through to Uniswap if no match
     // surfaces within the advert TTL.
-    const peer = lookForMatch(swap, safeAddress);
+    const peer = lookForMatch(swap, walletAddress);
     if (peer) {
-      const advertId = await broadcastAdvert(ctx, swap, safeAddress);
+      const advertId = await broadcastAdvert(ctx, swap, walletAddress);
       await settleMatch(
         ctx,
         advertId,
         peer,
-        safeAddress as `0x${string}`,
+        walletAddress as `0x${string}`,
       );
       continue;
     }
@@ -173,11 +276,11 @@ async function handleAllocation(
     // then dispatch normally. Atomic-settlement contract for "matched
     // late" advertisements is the next iteration; for now Uniswap
     // handles unmatched volume.
-    void broadcastAdvert(ctx, swap, safeAddress);
+    void broadcastAdvert(ctx, swap, walletAddress);
 
     await dispatch({
       ctx,
-      safeAddress,
+      walletAddress,
       originIntentId: `pm-${Date.now()}`,
       swap,
     });
@@ -186,7 +289,7 @@ async function handleAllocation(
 
 async function handleRebalance(
   ctx: AgentContext,
-  safeAddress: string,
+  walletAddress: string,
   intent: RebalanceIntent,
 ): Promise<void> {
   // ALM rebalance intents come in with placeholder token addresses
@@ -194,7 +297,7 @@ async function handleRebalance(
   // forward as a no-op and log; B-2 wires direction-resolution against
   // the v4 PoolManager state ALM already has cached.
   ctx.log.info('alm rebalance received (B-1 stub)', {
-    safeAddress,
+    walletAddress,
     poolId: intent.poolId,
     reason: intent.reason,
   });
