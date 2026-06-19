@@ -81,119 +81,122 @@ export async function setCustomConfig(
 // Skill connector
 // =====================================================================
 //
-// Hermes-Agent style: the swarm stores one installed skill (markdown
-// describing some service's API) plus the API key for that service.
-// The full content + key never come back to the UI — only metadata
-// (parsed name/version/description) and `keyTail`.
+// Per-agent skill installs. The user pastes (or links) a SKILL.md and
+// picks an agent role; the server discovers the register/status
+// endpoints from the markdown, self-registers (POST .../agents/register
+// with `{name: DefiSwarm-PM, description: ...}`), and persists the
+// returned api_key + claim_url + verification_code. The human visits
+// claim_url to complete verification on the skill's own site.
+//
+// `apiKey` is server-only — the wire shape carries `hasApiKey` + `keyTail`
+// so the UI can render "••••a3f2" without seeing the secret.
 
-export interface SkillState {
-  hasSkill: boolean;
-  hasKey: boolean;
-  keyTail: string | null;
-  name: string | null;
+export type AgentRole = 'pm' | 'alm' | 'router' | 'executor';
+
+export type ClaimStatus = 'unknown' | 'pending_claim' | 'claimed' | 'failed' | string;
+
+export interface InstalledSkillWire {
+  id: string;
+  agentRole: AgentRole;
+  name: string;
   version: string | null;
   description: string | null;
+  sourceUrl: string | null;
+  contentHash: string;
   contentLength: number;
-  installedAt: string | null;
-  updatedAt: string | null;
-  /** Hosts the PM tool-call loop is allowed to hit on the skill's behalf. */
+  /** Hosts the PM tool-call loop is allowed to hit on this skill's behalf. */
   allowedHosts: string[];
-  /** Which LLM provider PM is currently configured to use. */
-  llmProvider: 'groq' | 'hermes';
-  /** True when HERMES_API_KEY is set on the agents server. */
-  hermesConfigured: boolean;
-  hermesModel: string | null;
-  hermesBaseUrl: string | null;
-  /**
-   * True when all the conditions for the PM to actually use the skill are
-   * met (provider=hermes, content+key installed, ≥1 callable host). Drives
-   * the "live in PM" pill in the connector card.
-   */
-  pmActive: boolean;
+  apiBase: string | null;
+  registerEndpoint: string | null;
+  statusEndpoint: string | null;
+  hasApiKey: boolean;
+  keyTail: string | null;
+  /** Renderable: render a "Claim your agent" button when set + status=pending_claim. */
+  claimUrl: string | null;
+  /** Renderable: small text below the claim URL ("verification code: reef-X4B2"). */
+  verificationCode: string | null;
+  claimStatus: ClaimStatus;
+  lastHeartbeatAt: string | null;
+  registeredName: string | null;
+  installedAt: string;
+  updatedAt: string;
 }
 
-export async function getSkill(): Promise<SkillState> {
-  const res = await fetch(`${AGENTS_API_URL}/api/skill`);
+export async function listSkills(): Promise<InstalledSkillWire[]> {
+  const res = await fetch(`${AGENTS_API_URL}/api/skills`);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`getSkill ${res.status}: ${text || res.statusText}`);
+    throw new Error(`listSkills ${res.status}: ${text || res.statusText}`);
   }
-  return (await res.json()) as SkillState;
+  const json = (await res.json()) as { skills: InstalledSkillWire[] };
+  return json.skills;
+}
+
+export interface InstallSkillInput {
+  /** Either inline markdown… */
+  content?: string;
+  /** …or a URL to fetch the SKILL.md from. */
+  sourceUrl?: string;
+  agentRole: AgentRole;
 }
 
 /**
- * Patch the installed skill. Field semantics:
- *   undefined → leave alone, null → clear, string → overwrite.
- *   `clearKey: true` is an alias for `apiKey: null`.
- *
- * Pasting `content` triggers a server-side YAML-frontmatter parse so the
- * UI's "installed: <name> v<version>" line stays in sync without the
- * client needing to re-parse.
+ * Install + auto-register a skill. Atomic on the server: a 4xx upstream
+ * response leaves no half-installed row to clean up.
  */
-export interface SkillPatch {
-  content?: string | null;
-  apiKey?: string | null;
-  clearKey?: boolean;
-}
-
-export async function setSkill(patch: SkillPatch): Promise<SkillState> {
-  const res = await fetch(`${AGENTS_API_URL}/api/skill`, {
-    method: 'PUT',
+export async function installSkill(
+  input: InstallSkillInput,
+): Promise<InstalledSkillWire> {
+  const res = await fetch(`${AGENTS_API_URL}/api/skills`, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
+    body: JSON.stringify(input),
   });
-  const data = (await res.json().catch(() => ({}))) as
-    | SkillState
-    | { error?: string };
-  if (!res.ok) {
-    throw new Error((data as { error?: string }).error ?? `setSkill ${res.status}`);
+  const text = await res.text();
+  let body: { skill?: InstalledSkillWire; error?: string; upstreamStatus?: number } = {};
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`installSkill ${res.status}: ${text || res.statusText}`);
   }
-  return data as SkillState;
+  if (!res.ok || !body.skill) {
+    const upstream = body.upstreamStatus ? ` (upstream ${body.upstreamStatus})` : '';
+    throw new Error(`${body.error ?? `installSkill ${res.status}`}${upstream}`);
+  }
+  return body.skill;
 }
 
-export async function clearSkill(): Promise<void> {
-  const res = await fetch(`${AGENTS_API_URL}/api/skill`, { method: 'DELETE' });
+export async function uninstallSkill(skillId: string): Promise<void> {
+  const res = await fetch(`${AGENTS_API_URL}/api/skills/${encodeURIComponent(skillId)}`, {
+    method: 'DELETE',
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`clearSkill ${res.status}: ${text || res.statusText}`);
+    throw new Error(`uninstallSkill ${res.status}: ${text || res.statusText}`);
   }
 }
 
-// =====================================================================
-// Hermes connection test
-// =====================================================================
-//
-// Pings the configured Hermes endpoint with a one-token chat completion
-// and reports back. Used by the connector card's "Test Hermes" button so
-// users can verify their HERMES_* env vars work without waiting for a PM
-// tick to fail.
-
-export interface HermesTestResult {
-  ok: boolean;
-  status?: number;
-  latencyMs?: number;
-  model?: string | null;
-  baseUrl?: string | null;
-  /** Trimmed content of the model's reply. Only populated on success. */
-  sample?: string | null;
-  /** Upstream error message (truncated server-side) when ok=false. */
-  error?: string;
-  /** Optional human hint for the most common misconfig. */
-  hint?: string;
-}
-
-export async function testHermes(): Promise<HermesTestResult> {
-  const res = await fetch(`${AGENTS_API_URL}/api/hermes/test`, {
-    method: 'POST',
-  });
-  // The server returns structured JSON for both success (200) and the
-  // expected failure modes (400 missing key, 502 upstream error). Pass
-  // those through verbatim. Only fall through to a thrown Error on a
-  // genuine non-JSON response (e.g. Express 5xx from elsewhere).
+/**
+ * Force one heartbeat sweep across all installed skills, then return
+ * the latest row for `skillId`. Used by the connector card to give
+ * users an immediate "I just claimed, did it work?" affordance.
+ */
+export async function refreshSkillStatus(
+  skillId: string,
+): Promise<InstalledSkillWire> {
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/skills/${encodeURIComponent(skillId)}/refresh-status`,
+    { method: 'POST' },
+  );
   const text = await res.text();
+  let body: { skill?: InstalledSkillWire; error?: string } = {};
   try {
-    return JSON.parse(text) as HermesTestResult;
+    body = JSON.parse(text);
   } catch {
-    throw new Error(`testHermes ${res.status}: ${text || res.statusText}`);
+    throw new Error(`refreshSkillStatus ${res.status}: ${text || res.statusText}`);
   }
+  if (!res.ok || !body.skill) {
+    throw new Error(body.error ?? `refreshSkillStatus ${res.status}`);
+  }
+  return body.skill;
 }

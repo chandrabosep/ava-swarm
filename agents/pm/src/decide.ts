@@ -4,22 +4,16 @@
 // Output: AllocationIntent — target weights per symbol, with a tolerance.
 //
 // Provider is selected by env.llmProvider():
-//   groq   — Groq's hosted Llama/Qwen/Mixtral (default). Plain JSON-mode
-//            chat completion, no tool use.
+//   groq   — Groq's hosted Llama/Qwen/Mixtral (default).
 //   hermes — Nous Research Hermes via Nous Portal, or any OpenAI-compatible
-//            hermes-agent endpoint (HERMES_BASE_URL override). When a Skill
-//            is installed via the connector, its SKILL.md is injected into
-//            the system prompt and a `call_skill_api` tool is exposed so
-//            the model can fetch live context before deciding. The skill's
-//            API key never enters the prompt — it's attached server-side
-//            in invokeCallSkillApi() to outbound requests on the skill's
-//            host allowlist.
+//            hermes-agent endpoint (HERMES_BASE_URL override).
 //
-// The system prompt encodes:
-//   - the user's risk policy (max drawdown per day, max single position, …)
-//   - the universe of allowed tokens (for Phase B-1 we hardcode)
-//   - the requirement to return strictly JSON in a known schema
-//   - (hermes + installed skill) the SKILL.md body and host allowlist
+// Skill use: when one or more skills are installed for this agent role
+// (see agents/api/src/skills.ts for the install/register flow), we
+// inject every skill's SKILL.md into the system prompt and expose a
+// single `call_skill_api` tool. The model picks which skill to call via
+// the tool's `skill` argument. Each skill's API key is attached server-
+// side in invokeCallSkillApi(), so the LLM never sees credentials.
 //
 // We tolerate the occasional non-JSON response by wrapping in an
 // extract-JSON-from-text fallback.
@@ -30,10 +24,10 @@ import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
 import { profileFor, type RiskProfile } from './profiles.js';
 import {
-  buildSkillSystemSection,
-  callSkillApiTool,
+  buildSkillTool,
+  buildSkillsSystemSection,
   invokeCallSkillApi,
-  loadInstalledSkill,
+  loadSkillsForAgent,
   type InstalledSkill,
 } from './skill.js';
 
@@ -119,14 +113,14 @@ export async function decideAllocation(
   const userPrompt = buildUserPrompt(params);
   const baseSystem = buildSystemPrompt(params.riskProfile ?? 'balanced');
 
-  // Skill use is gated on Hermes — Groq's hosted models don't get the
-  // SKILL.md or the tool. (We could expose tools to Groq too, but the
-  // skill-driven flow is the differentiator we're shipping for Hermes.)
-  const skill = llm.provider === 'hermes' ? await loadInstalledSkill() : null;
+  // Skills are agent-role-scoped (see agents/api/src/skills.ts and the
+  // `skills` table). We expose them to whichever LLM PM is using —
+  // Groq and Hermes both speak OpenAI-compatible tool calls.
+  const skills = await loadSkillsForAgent('pm');
 
   const text =
-    skill && skill.allowedHosts.length > 0
-      ? await runWithSkillTools(client, llm.model, baseSystem, userPrompt, skill)
+    skills.length > 0
+      ? await runWithSkillTools(client, llm.model, baseSystem, userPrompt, skills)
       : await runPlainJson(client, llm.model, baseSystem, userPrompt);
 
   const parsed = extractJson(text) as {
@@ -189,24 +183,25 @@ async function runPlainJson(
 }
 
 /**
- * Hermes + skill: run a tool-calling loop. The model can call the skill's
- * HTTP API a few times to gather context, then must emit the allocation
- * JSON. We bound the loop at MAX_TOOL_TURNS and on the final pass strip
- * tools + force JSON-mode so the model can't stall indefinitely.
+ * Skills installed: run a tool-calling loop. The model can call any
+ * installed skill's HTTP API to gather context (social signals, market
+ * commentary, etc), then emit the allocation JSON. We bound the loop at
+ * MAX_TOOL_TURNS and on the final pass strip tools + force JSON-mode so
+ * the model can't stall indefinitely.
  */
 async function runWithSkillTools(
   client: OpenAI,
   model: string,
   baseSystem: string,
   user: string,
-  skill: InstalledSkill,
+  skills: InstalledSkill[],
 ): Promise<string> {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: baseSystem },
-    { role: 'system', content: buildSkillSystemSection(skill) },
+    { role: 'system', content: buildSkillsSystemSection(skills) },
     { role: 'user', content: user },
   ];
-  const tools = [callSkillApiTool(skill)];
+  const tools = [buildSkillTool(skills)];
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const res = await client.chat.completions.create({
@@ -238,7 +233,7 @@ async function runWithSkillTools(
     const results = await Promise.all(
       calls.map((tc) =>
         tc.type === 'function' && tc.function.name === 'call_skill_api'
-          ? invokeCallSkillApi(skill, tc.function.arguments)
+          ? invokeCallSkillApi(skills, tc.function.arguments)
           : Promise.resolve({
               ok: false,
               error: `unknown tool: ${tc.type === 'function' ? tc.function.name : tc.type}`,

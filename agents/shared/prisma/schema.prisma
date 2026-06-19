@@ -127,40 +127,80 @@ model AgentState {
 
 /// Global swarm-wide settings. Single-row table keyed by id='global'.
 ///
-/// Holds an installed "skill" — the markdown spec (frontmatter + body)
-/// that describes some external service's API, plus the API key for that
-/// service. Mirrors the Hermes Agent skill model: the skill is the *how*,
-/// the api_key is the *who*.
-///
-/// The swarm just persists what the user pastes. Whether that skill gets
-/// executed by the user's Hermes (in the clouds) or driven by a future
-/// swarm-side worker is downstream — this table is the source of truth
-/// for "which skill is currently installed and which key does it use."
-///
-/// SECURITY: API keys here are scoped to the service the skill targets
-/// (e.g. a Moltbook key only ever goes to www.moltbook.com). The key is
-/// stored in plaintext (same trust level as agents/.env) and never
-/// returned to the UI in full — only the last 4 chars ("keyTail") for
-/// recognition. Never embed this key in an LLM prompt.
+/// Legacy: held a single installed skill (skill_*). Superseded by the
+/// per-agent-role `Skill` table below. Columns kept for backward-compat
+/// during the transition; nothing in the codebase reads them anymore.
+/// Drop in a follow-up migration once the new skills flow has soaked.
 model SwarmSettings {
-  id              String    @id @default("global")
-  /// Parsed from the skill's YAML frontmatter `name:` field, e.g.
-  /// "moltbook". Surfaced in the UI's "installed: <name>" pill.
-  skillName       String?   @map("skill_name")
-  /// Same — parsed from `version:`. Optional.
-  skillVersion    String?   @map("skill_version")
-  /// Same — parsed from `description:`. Shown under the name.
-  skillDescription String?  @map("skill_description")
-  /// The full pasted skill markdown (frontmatter + body). Stored verbatim
-  /// so a future executor can hand it straight to an LLM tool-use loop.
-  skillContent    String?   @map("skill_content")
-  /// The API key for the service this skill targets. Service-scoped —
-  /// only sent in Authorization headers to that service, never elsewhere.
-  skillApiKey     String?   @map("skill_api_key")
-  /// First-install timestamp (mirrors Moltbook's claimedAt vibe — used
-  /// by the UI to show "installed 3 minutes ago").
+  id               String    @id @default("global")
+  skillName        String?   @map("skill_name")
+  skillVersion     String?   @map("skill_version")
+  skillDescription String?   @map("skill_description")
+  skillContent     String?   @map("skill_content")
+  skillApiKey      String?   @map("skill_api_key")
   skillInstalledAt DateTime? @map("skill_installed_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   @@map("swarm_settings")
+}
+
+/// Per-agent installed skill. Modeled after SwarmProtocol's
+/// `.skill-lock.json` (sourceUrl + contentHash for drift detection) +
+/// the moltbook self-register flow (apiKey + claimUrl + verificationCode
+/// returned by `POST /agents/register`, claim status flipped to
+/// `claimed` once the human verifies on the skill's site).
+///
+/// Identity model: each (agentRole, name) pair is a distinct install, so
+/// PM and Executor can both have a moltbook install with separate keys
+/// + separate claim URLs. The host allowlist for the LLM tool loop is
+/// derived from the SKILL.md body once at install time — see
+/// agents/pm/src/skill.ts.
+///
+/// SECURITY: `apiKey` is server-only — never echoed back to the UI in
+/// full, never embedded in an LLM prompt. It's attached server-side to
+/// outbound requests against the discovered `apiBase` host(s) only.
+model Skill {
+  id                String    @id @default(uuid())
+  /// Which swarm agent owns this install. Same skill can be installed for
+  /// multiple agents (each gets its own self-registered identity + key).
+  agentRole         AgentRole @map("agent_role")
+  /// Skill name (frontmatter `name:`). Stable identifier within a role.
+  name              String
+  version           String?
+  description       String?
+  /// URL the SKILL.md was fetched from, or null if pasted inline.
+  sourceUrl         String?   @map("source_url")
+  /// SHA-256 of `content` at install time. Lets the heartbeat job detect
+  /// upstream drift (fetch source, compare hash, surface "update available").
+  contentHash       String    @map("content_hash")
+  /// Full SKILL.md text (frontmatter + body). Verbatim so the PM tool
+  /// loop can inject it into the system prompt.
+  content           String
+  /// Comma-separated list of hosts the LLM tool loop is allowed to hit
+  /// on this skill's behalf. Derived from https URLs in the SKILL.md.
+  allowedHosts      String    @default("") @map("allowed_hosts")
+  /// Discovered registration endpoint (e.g. .../agents/register).
+  registerEndpoint  String?   @map("register_endpoint")
+  /// Discovered status endpoint for claim polling (e.g. .../agents/status).
+  statusEndpoint    String?   @map("status_endpoint")
+  /// Discovered API base (frontmatter metadata.*.api_base when present).
+  apiBase           String?   @map("api_base")
+  /// API key returned by self-register. Server-only.
+  apiKey            String?   @map("api_key")
+  /// URL the human visits to claim the registered agent.
+  claimUrl          String?   @map("claim_url")
+  /// Short verification code displayed alongside the claim URL.
+  verificationCode  String?   @map("verification_code")
+  /// `unknown` until first status check; then `pending_claim` | `claimed` | `failed`.
+  claimStatus       String    @default("unknown") @map("claim_status")
+  /// Updated by the heartbeat poller on every successful status check.
+  lastHeartbeatAt   DateTime? @map("last_heartbeat_at")
+  /// Identity the swarm registered itself under (the `name` we sent).
+  registeredName    String?   @map("registered_name")
+  installedAt       DateTime  @default(now()) @map("installed_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@unique([agentRole, name])
+  @@index([agentRole])
+  @@map("skills")
 }

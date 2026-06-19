@@ -1,73 +1,41 @@
-// Skill connector — Hermes-style.
+// Skill connector — auto-register flow.
 //
-// Three-step install ceremony, modeled on the polish of Moltbook's own
-// onboarding (https://www.moltbook.com/skill.md):
+// Three views:
 //
-//   1. PASTE  — drop a SKILL.md into the textarea. We send it to the
-//      server, the server parses the YAML frontmatter, and the UI flips
-//      to "detected: <name> v<version>".
-//   2. KEY    — paste the API key for whatever service the skill targets.
-//      Stored server-side, never echoed back (we only see `keyTail`).
-//   3. DONE   — installed. The user's Hermes (or a future swarm worker)
-//      can now act on the skill using the stored key.
+//   • EMPTY  — no skills installed. Show one form: paste SKILL.md (or
+//     a URL to one), pick an agent role, hit Install. Server discovers
+//     register endpoint, self-registers, persists everything.
 //
-// The api_key is service-scoped per the skill's own security guidance:
-// it should ONLY ever leave the agents/api server in Authorization
-// headers to that service's domain. Never embed it in an LLM prompt.
+//   • CLAIM  — one or more skills are pending_claim. Render the claim
+//     URL + verification code prominently so the user knows what to do
+//     next. Heartbeat poller flips claim_status to `claimed` once
+//     verification completes upstream; the UI auto-refreshes via React
+//     Query polling.
+//
+//   • LIVE   — skills are claimed. Render compact list of installed
+//     skills with last-heartbeat liveness pill + uninstall button.
+//
+// What's intentionally absent: any "paste your API key" step. The swarm
+// acquires credentials by following the SKILL.md's own register flow —
+// the user never types or sees an API key.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { Surface } from '@/components/common/Surface';
 import { Button } from '@/components/common/Button';
 import { Badge } from '@/components/common/Badge';
 import {
-  clearSkill,
-  getSkill,
-  setSkill,
-  testHermes,
-  type SkillState,
-  type SkillPatch,
-  type HermesTestResult,
+  installSkill,
+  listSkills,
+  refreshSkillStatus,
+  uninstallSkill,
+  type AgentRole,
+  type ClaimStatus,
+  type InstalledSkillWire,
 } from '@/lib/agents-api';
 
-type Phase = 'paste-skill' | 'paste-key' | 'installed';
-
-function phaseFor(s: SkillState | undefined): Phase {
-  if (!s) return 'paste-skill';
-  if (!s.hasSkill) return 'paste-skill';
-  if (!s.hasKey) return 'paste-key';
-  return 'installed';
-}
-
-function StepDot({ n, label, active, done }: {
-  n: number; label: string; active: boolean; done: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2 min-w-0">
-      <span
-        className={[
-          'h-6 w-6 rounded-full flex items-center justify-center text-[11px] font-semibold border transition-colors',
-          done
-            ? 'bg-positive/15 border-positive/40 text-positive'
-            : active
-              ? 'bg-accent/15 border-accent/50 text-accent'
-              : 'bg-bg-raised border-border-subtle text-fg-subtle',
-        ].join(' ')}
-      >
-        {done ? '✓' : n}
-      </span>
-      <span
-        className={[
-          'text-xs truncate',
-          active || done ? 'text-fg' : 'text-fg-subtle',
-        ].join(' ')}
-      >
-        {label}
-      </span>
-    </div>
-  );
-}
+const AGENT_ROLES: AgentRole[] = ['pm', 'alm', 'router', 'executor'];
 
 function relativeTime(iso: string | null): string | null {
   if (!iso) return null;
@@ -78,13 +46,25 @@ function relativeTime(iso: string | null): string | null {
   return `${Math.floor(ms / (24 * 60 * 60_000))}d ago`;
 }
 
-/** Quickly peek at frontmatter before sending to the server, for instant UI feedback. */
+function claimBadge(status: ClaimStatus) {
+  if (status === 'claimed') return <Badge tone="positive" dot>claimed</Badge>;
+  if (status === 'pending_claim')
+    return <Badge tone="warning" dot>pending claim</Badge>;
+  if (status === 'failed') return <Badge tone="negative" dot>failed</Badge>;
+  return <Badge tone="neutral">unknown</Badge>;
+}
+
+/** Quick frontmatter peek for the install preview. */
 function peekFrontmatter(content: string): {
   name: string | null;
   version: string | null;
   description: string | null;
 } {
-  const out = { name: null as string | null, version: null as string | null, description: null as string | null };
+  const out = {
+    name: null as string | null,
+    version: null as string | null,
+    description: null as string | null,
+  };
   const m = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return out;
   for (const line of m[1].split(/\r?\n/)) {
@@ -102,151 +82,108 @@ function peekFrontmatter(content: string): {
   return out;
 }
 
-export function SkillConnectorCard() {
+// =====================================================================
+// Install form
+// =====================================================================
+
+function InstallForm({
+  onInstalled,
+}: {
+  onInstalled: (skill: InstalledSkillWire) => void;
+}) {
   const qc = useQueryClient();
+  const [mode, setMode] = useState<'paste' | 'url'>('paste');
+  const [content, setContent] = useState('');
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [agentRole, setAgentRole] = useState<AgentRole>('pm');
 
-  const skill = useQuery<SkillState>({
-    queryKey: ['skill'],
-    queryFn: getSkill,
-    refetchOnWindowFocus: false,
-  });
-
-  const phase = phaseFor(skill.data);
-
-  // ----- step 1: paste skill -----
-  const [draftContent, setDraftContent] = useState('');
-  const draftPeek = useMemo(
-    () => (draftContent.length > 0 ? peekFrontmatter(draftContent) : null),
-    [draftContent],
+  const peek = useMemo(
+    () => (mode === 'paste' && content.length > 0 ? peekFrontmatter(content) : null),
+    [mode, content],
   );
 
-  const installSkill = useMutation({
-    mutationFn: (content: string) => setSkill({ content }),
-    onSuccess: (next) => {
-      qc.setQueryData(['skill'], next);
-      setDraftContent('');
+  const install = useMutation({
+    mutationFn: () =>
+      installSkill(
+        mode === 'paste'
+          ? { content, agentRole }
+          : { sourceUrl, agentRole },
+      ),
+    onSuccess: (skill) => {
+      qc.invalidateQueries({ queryKey: ['skills'] });
+      setContent('');
+      setSourceUrl('');
+      onInstalled(skill);
     },
   });
 
-  // ----- step 2: paste key -----
-  const [draftKey, setDraftKey] = useState('');
-  const installKey = useMutation({
-    mutationFn: (apiKey: string) => setSkill({ apiKey }),
-    onSuccess: (next) => {
-      qc.setQueryData(['skill'], next);
-      setDraftKey('');
-    },
-  });
-
-  // ----- step 3 / cleanup -----
-  const replaceKey = useMutation({
-    mutationFn: (patch: SkillPatch) => setSkill(patch),
-    onSuccess: (next) => qc.setQueryData(['skill'], next),
-  });
-  const wipe = useMutation({
-    mutationFn: clearSkill,
-    onSuccess: () => {
-      setDraftContent('');
-      setDraftKey('');
-      installSkill.reset();
-      installKey.reset();
-      void qc.invalidateQueries({ queryKey: ['skill'] });
-    },
-  });
-
-  // Reset draft state if the underlying state changes from elsewhere.
-  useEffect(() => {
-    if (phase !== 'paste-skill') setDraftContent('');
-    if (phase !== 'paste-key') setDraftKey('');
-  }, [phase]);
-
-  // Hermes smoke test — kept as a one-shot mutation so the result lingers
-  // in `data` until the user clicks again or unmounts.
-  const hermesTest = useMutation<HermesTestResult>({
-    mutationFn: testHermes,
-  });
-
-  const headerBadge = useMemo(() => {
-    if (phase === 'installed') {
-      // "installed" is local — the more useful signal is whether the PM
-      // is actually consuming the skill. `pmActive` rolls up provider +
-      // content + key + ≥1 callable host into a single bool.
-      if (skill.data?.pmActive) {
-        return <Badge tone="positive" dot>live in PM</Badge>;
-      }
-      return <Badge tone="warning" dot>installed · idle</Badge>;
-    }
-    if (phase === 'paste-key')
-      return <Badge tone="warning" dot>needs key</Badge>;
-    return <Badge tone="neutral">no skill yet</Badge>;
-  }, [phase, skill.data?.pmActive]);
-
-  const detectedSummary =
-    skill.data?.hasSkill && (skill.data.name || skill.data.version)
-      ? `${skill.data.name ?? 'unnamed'}${skill.data.version ? ` v${skill.data.version}` : ''}`
-      : null;
+  const canSubmit =
+    !install.isPending &&
+    (mode === 'paste' ? content.trim().length >= 10 : sourceUrl.trim().length >= 8);
 
   return (
-    <Surface className="p-5 space-y-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
-            <span aria-hidden className="text-base">🪝</span>
-            Skill connector
-          </h2>
-          <p className="mt-1 text-xs text-fg-muted leading-relaxed max-w-xl">
-            Paste a Hermes-style skill file (e.g.{' '}
-            <a
-              className="text-accent hover:underline"
-              href="https://www.moltbook.com/skill.md"
-              target="_blank"
-              rel="noreferrer"
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="text-fg-subtle uppercase tracking-wider">source</span>
+        <button
+          type="button"
+          className={`px-2 py-0.5 rounded border ${
+            mode === 'paste'
+              ? 'border-accent text-accent bg-accent/5'
+              : 'border-border-subtle text-fg-subtle'
+          }`}
+          onClick={() => setMode('paste')}
+        >
+          paste markdown
+        </button>
+        <button
+          type="button"
+          className={`px-2 py-0.5 rounded border ${
+            mode === 'url'
+              ? 'border-accent text-accent bg-accent/5'
+              : 'border-border-subtle text-fg-subtle'
+          }`}
+          onClick={() => setMode('url')}
+        >
+          fetch from URL
+        </button>
+      </div>
+
+      <label className="block">
+        <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
+          assign to agent role
+        </span>
+        <div className="mt-1 flex flex-wrap gap-2">
+          {AGENT_ROLES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setAgentRole(r)}
+              className={`px-2 py-1 text-xs font-mono rounded border ${
+                agentRole === r
+                  ? 'border-accent text-accent bg-accent/10'
+                  : 'border-border-subtle text-fg-muted hover:text-fg'
+              }`}
             >
-              moltbook.com/skill.md
-            </a>
-            ) and the API key for the service it targets. The swarm stores both
-            so your Hermes can act on the skill — keys go to the skill's
-            domain only, never to anyone else.
-          </p>
+              {r}
+            </button>
+          ))}
         </div>
-        {headerBadge}
-      </div>
+        <span className="mt-1 block text-[11px] text-fg-subtle">
+          The skill self-registers under this role&apos;s identity (e.g.{' '}
+          <span className="font-mono">DefiSwarm-{agentRole.toUpperCase()}</span>).
+        </span>
+      </label>
 
-      {/* Step rail */}
-      <div className="flex items-center gap-3 sm:gap-6 overflow-x-auto pb-1">
-        <StepDot
-          n={1}
-          label="Paste skill"
-          active={phase === 'paste-skill'}
-          done={phase !== 'paste-skill'}
-        />
-        <span className="h-px flex-1 bg-border-subtle min-w-[16px]" />
-        <StepDot
-          n={2}
-          label="Paste API key"
-          active={phase === 'paste-key'}
-          done={phase === 'installed'}
-        />
-        <span className="h-px flex-1 bg-border-subtle min-w-[16px]" />
-        <StepDot
-          n={3}
-          label="Installed"
-          active={phase === 'installed'}
-          done={phase === 'installed'}
-        />
-      </div>
-
-      {/* ===== STEP 1: paste skill ===== */}
-      {phase === 'paste-skill' && (
-        <div className="space-y-3">
-          <label className="block">
-            <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
-              Skill file (markdown)
-            </span>
-            <textarea
-              value={draftContent}
-              onChange={(e) => setDraftContent(e.target.value)}
-              placeholder={`---
+      {mode === 'paste' ? (
+        <label className="block">
+          <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
+            SKILL.md
+          </span>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder={`---
 name: moltbook
 version: 1.12.0
 description: The social network for AI agents.
@@ -254,347 +191,334 @@ description: The social network for AI agents.
 
 # Moltbook
 ...paste the rest of the SKILL.md here...`}
-              rows={10}
-              spellCheck={false}
-              className="mt-1 w-full rounded-md border border-border-subtle bg-bg-raised px-3 py-2 text-xs font-mono placeholder:text-fg-subtle focus:outline-none focus:border-accent resize-y"
-            />
-          </label>
+            rows={9}
+            spellCheck={false}
+            className="mt-1 w-full rounded-md border border-border-subtle bg-bg-raised px-3 py-2 text-xs font-mono placeholder:text-fg-subtle focus:outline-none focus:border-accent resize-y"
+          />
+        </label>
+      ) : (
+        <label className="block">
+          <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
+            SKILL.md URL
+          </span>
+          <input
+            type="url"
+            value={sourceUrl}
+            onChange={(e) => setSourceUrl(e.target.value)}
+            placeholder="https://www.moltbook.com/skill.md"
+            className="mt-1 w-full rounded-md border border-border-subtle bg-bg-raised px-3 py-2 text-sm font-mono placeholder:text-fg-subtle focus:outline-none focus:border-accent"
+          />
+          <span className="mt-1 block text-[11px] text-fg-subtle">
+            Server fetches the markdown over HTTPS, parses it, then self-registers.
+          </span>
+        </label>
+      )}
 
-          {/* Live frontmatter peek */}
-          {draftContent.length > 0 && (
-            <div className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2 text-[11px] flex items-center gap-3">
-              <span className="text-fg-subtle uppercase tracking-wider">
-                detected
-              </span>
-              {draftPeek?.name ? (
-                <>
-                  <span className="font-mono text-fg">{draftPeek.name}</span>
-                  {draftPeek.version && (
-                    <span className="font-mono text-fg-muted">
-                      v{draftPeek.version}
-                    </span>
-                  )}
-                  {draftPeek.description && (
-                    <span className="text-fg-muted truncate">
-                      — {draftPeek.description}
-                    </span>
-                  )}
-                </>
-              ) : (
-                <span className="text-warning">
-                  no YAML frontmatter found — we'll still store it, but won't
-                  know the skill's name/version
-                </span>
-              )}
-            </div>
+      {peek && peek.name && (
+        <div className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2 text-[11px] flex items-center gap-3 flex-wrap">
+          <span className="text-fg-subtle uppercase tracking-wider">detected</span>
+          <span className="font-mono text-fg">{peek.name}</span>
+          {peek.version && (
+            <span className="font-mono text-fg-muted">v{peek.version}</span>
           )}
-
-          {installSkill.error && (
-            <div className="text-xs text-negative bg-negative/10 border border-negative/30 rounded-md px-3 py-2">
-              {installSkill.error instanceof Error
-                ? installSkill.error.message
-                : String(installSkill.error)}
-            </div>
-          )}
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="primary"
-              onClick={() => installSkill.mutate(draftContent)}
-              disabled={installSkill.isPending || draftContent.trim().length < 10}
-            >
-              {installSkill.isPending ? 'installing…' : 'Install skill'}
-            </Button>
-            <span className="text-[11px] text-fg-subtle">
-              {draftContent.length.toLocaleString()} chars · stored in Postgres,
-              never sent off-server
+          {peek.description && (
+            <span className="text-fg-muted truncate max-w-[24rem]">
+              — {peek.description}
             </span>
-          </div>
+          )}
         </div>
       )}
 
-      {/* ===== STEP 2: paste API key ===== */}
-      {phase === 'paste-key' && skill.data && (
-        <div className="space-y-3">
-          <div className="rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-xs leading-relaxed">
-            <div className="text-fg">
-              <span className="font-semibold text-accent">skill installed:</span>{' '}
-              <span className="font-mono">
-                {skill.data.name ?? 'unnamed'}
-              </span>
-              {skill.data.version && (
-                <span className="font-mono text-fg-muted">
-                  {' '}v{skill.data.version}
-                </span>
-              )}
-            </div>
-            {skill.data.description && (
-              <div className="mt-0.5 text-fg-muted">{skill.data.description}</div>
-            )}
+      {install.error && (
+        <div className="text-xs text-negative bg-negative/10 border border-negative/30 rounded-md px-3 py-2 break-words">
+          {install.error instanceof Error
+            ? install.error.message
+            : String(install.error)}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant="primary"
+          onClick={() => install.mutate()}
+          disabled={!canSubmit}
+        >
+          {install.isPending ? 'registering…' : 'Install + auto-register'}
+        </Button>
+        <span className="text-[11px] text-fg-subtle">
+          The swarm registers itself with the skill — no API key for you to paste.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Skill row (claim flow + live)
+// =====================================================================
+
+function SkillRow({ skill }: { skill: InstalledSkillWire }) {
+  const qc = useQueryClient();
+  const [copied, setCopied] = useState(false);
+
+  const refresh = useMutation({
+    mutationFn: () => refreshSkillStatus(skill.id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['skills'] }),
+  });
+  const remove = useMutation({
+    mutationFn: () => uninstallSkill(skill.id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['skills'] }),
+  });
+
+  const isPending = skill.claimStatus === 'pending_claim';
+  const isClaimed = skill.claimStatus === 'claimed';
+
+  return (
+    <div
+      className={[
+        'rounded-md border px-3 py-3 space-y-3',
+        isClaimed
+          ? 'border-positive/30 bg-positive/5'
+          : isPending
+            ? 'border-warning/30 bg-warning/5'
+            : 'border-border-subtle bg-bg-raised',
+      ].join(' ')}
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-base">🪝</span>
+        <span className="font-mono text-sm text-fg">{skill.name}</span>
+        {skill.version && (
+          <span className="font-mono text-[11px] text-fg-muted">
+            v{skill.version}
+          </span>
+        )}
+        <Badge tone="neutral">{skill.agentRole}</Badge>
+        {claimBadge(skill.claimStatus)}
+        <span className="ml-auto text-[10px] text-fg-subtle">
+          installed {relativeTime(skill.installedAt) ?? 'recently'}
+        </span>
+      </div>
+      {skill.description && (
+        <div className="text-xs text-fg-muted leading-relaxed">
+          {skill.description}
+        </div>
+      )}
+
+      {isPending && skill.claimUrl && (
+        <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2.5 space-y-2">
+          <div className="text-[11px] font-semibold text-warning uppercase tracking-wider">
+            action required: claim this agent
           </div>
-
-          <label className="block">
-            <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
-              API key for {skill.data.name ?? 'this skill'}
-            </span>
-            <input
-              type="password"
-              autoComplete="off"
-              value={draftKey}
-              onChange={(e) => setDraftKey(e.target.value)}
-              placeholder={`paste the API key issued by ${skill.data.name ?? 'the service'}`}
-              className="mt-1 w-full rounded-md border border-border-subtle bg-bg-raised px-3 py-2 text-sm font-mono placeholder:text-fg-subtle focus:outline-none focus:border-accent"
-            />
-            <span className="mt-1 block text-[11px] text-fg-subtle">
-              ⚠ this key is service-scoped — only ever sent to the skill's
-              own domain, never to LLMs or other services.
-            </span>
-          </label>
-
-          {installKey.error && (
-            <div className="text-xs text-negative bg-negative/10 border border-negative/30 rounded-md px-3 py-2">
-              {installKey.error instanceof Error
-                ? installKey.error.message
-                : String(installKey.error)}
-            </div>
-          )}
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="primary"
-              onClick={() => installKey.mutate(draftKey)}
-              disabled={installKey.isPending || draftKey.trim().length < 4}
+          <div className="text-xs text-fg leading-relaxed">
+            The swarm registered{' '}
+            <span className="font-mono">
+              {skill.registeredName ?? skill.name}
+            </span>{' '}
+            with <span className="font-mono">{skill.name}</span>. Visit the
+            claim URL to verify ownership on their site.
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={skill.claimUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-warning text-bg text-xs font-semibold hover:opacity-90"
             >
-              {installKey.isPending ? 'saving…' : 'Save key'}
-            </Button>
+              Claim agent →
+            </a>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(skill.claimUrl ?? '');
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              className="text-[11px] text-fg-muted hover:text-fg"
+            >
+              {copied ? 'copied' : 'copy URL'}
+            </button>
             <Button
-              variant="ghost"
               size="sm"
-              onClick={() => wipe.mutate()}
-              disabled={wipe.isPending}
+              variant="ghost"
+              onClick={() => refresh.mutate()}
+              disabled={refresh.isPending}
             >
-              Start over
+              {refresh.isPending ? 'checking…' : 'I claimed it'}
             </Button>
           </div>
-        </div>
-      )}
-
-      {/* ===== STEP 3: installed ===== */}
-      {phase === 'installed' && skill.data && (
-        <div className="space-y-4">
-          <div
-            className={[
-              'rounded-md border px-3 py-2 text-xs leading-relaxed',
-              skill.data.pmActive
-                ? 'border-positive/30 bg-positive/5'
-                : 'border-warning/30 bg-warning/5',
-            ].join(' ')}
-          >
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-base">🪝</span>
-              <span
-                className={[
-                  'font-semibold',
-                  skill.data.pmActive ? 'text-positive' : 'text-warning',
-                ].join(' ')}
-              >
-                {skill.data.pmActive
-                  ? 'live in PM tick.'
-                  : 'connector idle.'}
-              </span>
+          {skill.verificationCode && (
+            <div className="text-[11px] text-fg-muted">
+              verification code:{' '}
               <span className="font-mono text-fg">
-                {detectedSummary ?? 'unnamed skill'}
+                {skill.verificationCode}
               </span>
-              <span className="ml-auto text-[10px] text-fg-subtle">
-                installed {relativeTime(skill.data.installedAt) ?? 'recently'}
-              </span>
-            </div>
-            {skill.data.description && (
-              <div className="mt-1 text-fg-muted">{skill.data.description}</div>
-            )}
-            {!skill.data.pmActive && (
-              <div className="mt-2 text-[11px] text-fg-muted">
-                {skill.data.llmProvider !== 'hermes' ? (
-                  <>
-                    PM is currently running on{' '}
-                    <span className="font-mono">{skill.data.llmProvider}</span>.
-                    Set <span className="font-mono">LLM_PROVIDER=hermes</span>{' '}
-                    in <span className="font-mono">agents/.env</span> to let
-                    PM consume this skill.
-                  </>
-                ) : skill.data.allowedHosts.length === 0 ? (
-                  <>
-                    No <span className="font-mono">https://</span> hosts found
-                    in the skill markdown — the PM tool loop has nothing to
-                    call. Re-paste a skill that mentions its API host(s).
-                  </>
-                ) : (
-                  <>
-                    Skill installed but PM hasn't picked it up — try the test
-                    button below.
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[
-              ['skill name', skill.data.name ?? '—'],
-              ['version', skill.data.version ?? '—'],
-              ['skill size', `${(skill.data.contentLength / 1024).toFixed(1)} KB`],
-              [
-                'api key',
-                skill.data.keyTail ? `••••${skill.data.keyTail}` : '—',
-              ],
-              [
-                'pm provider',
-                skill.data.llmProvider === 'hermes'
-                  ? `hermes · ${skill.data.hermesModel ?? '?'}`
-                  : skill.data.llmProvider,
-              ],
-              [
-                'allowed hosts',
-                skill.data.allowedHosts.length === 0
-                  ? '—'
-                  : `${skill.data.allowedHosts.length} host${skill.data.allowedHosts.length === 1 ? '' : 's'}`,
-              ],
-            ].map(([k, v]) => (
-              <div
-                key={k as string}
-                className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2"
-              >
-                <div className="text-[10px] uppercase tracking-wider text-fg-subtle">
-                  {k as string}
-                </div>
-                <div className="text-sm font-mono text-fg truncate">
-                  {v as string}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {skill.data.allowedHosts.length > 0 && (
-            <div className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-fg-subtle mb-1">
-                Hosts the skill can call
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {skill.data.allowedHosts.map((h) => (
-                  <span
-                    key={h}
-                    className="font-mono text-[11px] text-fg bg-bg border border-border-subtle rounded px-1.5 py-0.5"
-                  >
-                    {h}
-                  </span>
-                ))}
-              </div>
-              <div className="mt-1.5 text-[10px] text-fg-subtle">
-                Your PM can issue tool calls to these hosts only — the API
-                key is attached server-side, never in the LLM prompt.
-              </div>
             </div>
           )}
-
-          {/* Hermes test panel — actionable when provider=hermes; informational otherwise. */}
-          <div className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2 space-y-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
-                Hermes endpoint
-              </span>
-              <span className="text-[11px] font-mono text-fg-muted truncate">
-                {skill.data.hermesBaseUrl ?? '—'}
-              </span>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="ml-auto"
-                onClick={() => hermesTest.mutate()}
-                disabled={hermesTest.isPending || !skill.data.hermesConfigured}
-                title={
-                  skill.data.hermesConfigured
-                    ? undefined
-                    : 'HERMES_API_KEY not set on the agents server'
-                }
-              >
-                {hermesTest.isPending ? 'pinging…' : 'Test Hermes'}
-              </Button>
-            </div>
-            {!skill.data.hermesConfigured && (
-              <div className="text-[11px] text-warning">
-                <span className="font-mono">HERMES_API_KEY</span> not configured
-                on the agents server — PM won't be able to reach Hermes.
-              </div>
-            )}
-            {hermesTest.data && (
-              <div
-                className={[
-                  'text-[11px] rounded px-2 py-1.5 border',
-                  hermesTest.data.ok
-                    ? 'text-positive border-positive/30 bg-positive/5'
-                    : 'text-negative border-negative/30 bg-negative/10',
-                ].join(' ')}
-              >
-                {hermesTest.data.ok ? (
-                  <>
-                    <span className="font-mono">{hermesTest.data.model}</span>{' '}
-                    replied <span className="font-mono">"{hermesTest.data.sample ?? ''}"</span>{' '}
-                    in {hermesTest.data.latencyMs}ms.
-                  </>
-                ) : (
-                  <>
-                    <span className="font-semibold">
-                      {hermesTest.data.status
-                        ? `${hermesTest.data.status} `
-                        : ''}
-                      failed:
-                    </span>{' '}
-                    <span className="font-mono">
-                      {hermesTest.data.error ?? 'unknown error'}
-                    </span>
-                    {hermesTest.data.hint && (
-                      <div className="mt-0.5 text-fg-muted">
-                        {hermesTest.data.hint}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-            {hermesTest.error && !hermesTest.data && (
-              <div className="text-[11px] text-negative">
-                {hermesTest.error instanceof Error
-                  ? hermesTest.error.message
-                  : String(hermesTest.error)}
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 pt-1 flex-wrap">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => replaceKey.mutate({ clearKey: true })}
-              disabled={replaceKey.isPending}
-            >
-              Rotate key
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => wipe.mutate()}
-              disabled={wipe.isPending}
-            >
-              Uninstall skill
-            </Button>
-            <span className="text-[10px] text-fg-subtle ml-auto">
-              {skill.data.pmActive
-                ? 'PM will pull the skill + key on its next tick.'
-                : 'connector ready — flip PM to hermes to start using it.'}
-            </span>
-          </div>
         </div>
       )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="rounded border border-border-subtle bg-bg-raised px-2 py-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-fg-subtle">
+            api key
+          </div>
+          <div className="font-mono text-fg truncate">
+            {skill.keyTail ? `••••${skill.keyTail}` : '—'}
+          </div>
+        </div>
+        <div className="rounded border border-border-subtle bg-bg-raised px-2 py-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-fg-subtle">
+            allowed hosts
+          </div>
+          <div
+            className="font-mono text-fg truncate"
+            title={skill.allowedHosts.join(', ')}
+          >
+            {skill.allowedHosts.length === 0
+              ? '—'
+              : skill.allowedHosts.length === 1
+                ? skill.allowedHosts[0]
+                : `${skill.allowedHosts.length} hosts`}
+          </div>
+        </div>
+        <div className="rounded border border-border-subtle bg-bg-raised px-2 py-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-fg-subtle">
+            last heartbeat
+          </div>
+          <div className="font-mono text-fg truncate">
+            {relativeTime(skill.lastHeartbeatAt) ?? '—'}
+          </div>
+        </div>
+        <div className="rounded border border-border-subtle bg-bg-raised px-2 py-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-fg-subtle">
+            md size
+          </div>
+          <div className="font-mono text-fg truncate">
+            {(skill.contentLength / 1024).toFixed(1)} KB
+          </div>
+        </div>
+      </div>
+
+      {skill.allowedHosts.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {skill.allowedHosts.map((h) => (
+            <span
+              key={h}
+              className="font-mono text-[10px] text-fg bg-bg border border-border-subtle rounded px-1.5 py-0.5"
+            >
+              {h}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => refresh.mutate()}
+          disabled={refresh.isPending}
+        >
+          {refresh.isPending ? 'refreshing…' : 'refresh status'}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => remove.mutate()}
+          disabled={remove.isPending}
+        >
+          uninstall
+        </Button>
+        {refresh.error && (
+          <span className="text-[11px] text-negative">
+            {refresh.error instanceof Error
+              ? refresh.error.message
+              : 'refresh failed'}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Top-level card
+// =====================================================================
+
+export function SkillConnectorCard() {
+  const skills = useQuery({
+    queryKey: ['skills'],
+    queryFn: listSkills,
+    // While any skill is pending_claim, poll every 5s so the UI flips
+    // to "claimed" the moment the heartbeat sweep updates the row.
+    refetchInterval: (q) => {
+      const data = q.state.data as InstalledSkillWire[] | undefined;
+      return data?.some((s) => s.claimStatus === 'pending_claim') ? 5_000 : false;
+    },
+    refetchOnWindowFocus: true,
+  });
+
+  const list = skills.data ?? [];
+  const hasPending = list.some((s) => s.claimStatus === 'pending_claim');
+  const claimedCount = list.filter((s) => s.claimStatus === 'claimed').length;
+
+  const headerBadge = (() => {
+    if (list.length === 0) return <Badge tone="neutral">no skills</Badge>;
+    if (hasPending) return <Badge tone="warning" dot>action needed</Badge>;
+    if (claimedCount === list.length)
+      return (
+        <Badge tone="positive" dot>
+          {claimedCount} live
+        </Badge>
+      );
+    return <Badge tone="neutral">{list.length} installed</Badge>;
+  })();
+
+  return (
+    <Surface className="p-5 space-y-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
+            <span aria-hidden className="text-base">
+              🪝
+            </span>
+            Skill connector
+          </h2>
+          <p className="mt-1 text-xs text-fg-muted leading-relaxed max-w-xl">
+            Paste a SKILL.md (or link to one). The swarm self-registers,
+            grabs its own API key, and surfaces a claim URL for you to
+            verify on the skill&apos;s site. No keys to paste.
+          </p>
+        </div>
+        {headerBadge}
+      </div>
+
+      {list.length > 0 && (
+        <div className="space-y-3">
+          {list.map((s) => (
+            <SkillRow key={s.id} skill={s} />
+          ))}
+        </div>
+      )}
+
+      <details
+        className="rounded-md border border-border-subtle bg-bg-raised"
+        open={list.length === 0}
+      >
+        <summary className="px-3 py-2 text-xs font-semibold cursor-pointer select-none flex items-center gap-2">
+          <span>
+            {list.length === 0
+              ? 'Install your first skill'
+              : 'Install another skill'}
+          </span>
+          <span className="text-[10px] text-fg-subtle font-normal ml-auto">
+            paste markdown · or fetch from URL
+          </span>
+        </summary>
+        <div className="px-3 py-3 border-t border-border-subtle">
+          <InstallForm onInstalled={() => skills.refetch()} />
+        </div>
+      </details>
     </Surface>
   );
 }

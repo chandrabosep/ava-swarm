@@ -19,6 +19,13 @@ import {
   createLogger,
   type AgentRole,
 } from '@swarm/shared';
+import {
+  discover,
+  hashContent,
+  keyTail,
+  selfRegister,
+  startHeartbeatLoop,
+} from './skills.js';
 
 const log = createLogger('api');
 
@@ -398,161 +405,291 @@ app.get('/api/status/:walletAddress', async (req, res) => {
 });
 
 // =====================================================================
-// Skill connector
-// =====================================================================
-// Skill connector
+// Skill connector — auto-register flow
 // =====================================================================
 //
-// A "skill" is a markdown file (Hermes-Agent style) that describes how
-// to interact with some external service — see e.g. Moltbook's SKILL.md
-// at https://www.moltbook.com/skill.md. The user pastes the skill into
-// the extension, then pastes the API key for whatever service the skill
-// targets. The swarm just persists both. Whether the skill is then
-// driven by the user's Hermes (running elsewhere) or by a future swarm-
-// side worker is downstream — this layer is storage only.
+// A "skill" is a SKILL.md describing how to talk to some external
+// service (e.g. Moltbook https://www.moltbook.com/skill.md). The flow:
 //
-// Three endpoints:
-//   GET    /api/skill        — current install (skill metadata + keyTail).
-//                              Never echoes the full content+key.
-//   PUT    /api/skill        — patch: { content?, apiKey?, clearKey? }
-//                              On content paste we parse the YAML
-//                              frontmatter and pull out name / version /
-//                              description so the UI can show "installed:
-//                              moltbook v1.12.0" without re-parsing.
-//   DELETE /api/skill        — wipe everything (skill + key).
+//   1. POST /api/skills  with { content | sourceUrl, agentRole }.
+//        Server discovers register/status endpoints + host allowlist
+//        from the markdown, immediately POSTs the discovered register
+//        endpoint with `{name: DefiSwarm-PM, description: ...}`, and
+//        persists everything returned (apiKey server-only).
+//   2. The response includes claim_url + verification_code — the human
+//      visits that URL to complete claim on the skill's own site.
+//   3. A background heartbeat poller (skills.startHeartbeatLoop) hits
+//      each skill's status endpoint with the stored Bearer key and
+//      flips claim_status from `pending_claim` → `claimed` once the
+//      upstream confirms.
+//
+// What is NOT here:
+//   - User-pasted API keys. Skills self-register; the swarm acquires
+//     credentials by following the SKILL.md, not by asking the human.
+//   - Hermes/Groq LLM provider config. That's env-driven and the PM
+//     reads it directly. Skills are orthogonal — they're external
+//     services the agents can act on, regardless of which LLM drives
+//     the agent.
 
-const keyTail = (k: string | null | undefined): string | null =>
-  k && k.length >= 4 ? k.slice(-4) : null;
+const MAX_SKILL_CONTENT_BYTES = 200_000;
+const FETCH_SKILL_TIMEOUT_MS = 15_000;
 
-interface SkillFrontmatter {
-  name: string | null;
+interface SkillRow {
+  id: string;
+  agentRole: AgentRole;
+  name: string;
   version: string | null;
   description: string | null;
-}
-
-/**
- * Parse the YAML-ish frontmatter from a Hermes skill file. We don't pull
- * a YAML lib for this — frontmatter blocks are simple key:value lines and
- * the only nested thing in the wild (Moltbook's `metadata: {…}` JSON) we
- * skip. If parsing fails we just return all-nulls; the swarm still stores
- * the raw content.
- */
-function parseSkillFrontmatter(content: string): SkillFrontmatter {
-  const empty: SkillFrontmatter = { name: null, version: null, description: null };
-  const m = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) return empty;
-  const block = m[1];
-  const out: SkillFrontmatter = { ...empty };
-  for (const line of block.split(/\r?\n/)) {
-    const kv = line.match(/^(name|version|description)\s*:\s*(.+?)\s*$/);
-    if (!kv) continue;
-    const key = kv[1] as keyof SkillFrontmatter;
-    let val = kv[2];
-    // Strip surrounding quotes if present.
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
-    out[key] = val;
-  }
-  return out;
-}
-
-/**
- * Pull the set of distinct https hosts referenced in the skill markdown.
- * The PM uses this list as the allowlist when the model invokes
- * `call_skill_api` — the API server surfaces it for the UI so users can
- * see which hosts their skill is actually allowed to talk to. Logic
- * mirrors agents/pm/src/skill.ts:extractHosts; kept duplicated to keep
- * `@swarm/shared` free of skill-runtime concerns.
- */
-function extractSkillHosts(content: string | null | undefined): string[] {
-  if (!content) return [];
-  const out = new Set<string>();
-  const re = /https?:\/\/([a-zA-Z0-9.\-]+)(?::\d+)?(?:\/|\b)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content))) {
-    const host = m[1].toLowerCase();
-    if (host === 'example.com' || host === 'localhost') continue;
-    out.add(host);
-  }
-  return [...out];
-}
-
-/**
- * Snapshot of the LLM provider currently selected for PM ticks. The skill
- * connector only drives the PM when provider==='hermes' AND a skill is
- * installed AND the skill exposes at least one callable host — so the UI
- * needs all three pieces to render the right status.
- */
-function llmStatus(): {
-  provider: 'groq' | 'hermes';
-  hermesConfigured: boolean;
-  hermesModel: string | null;
-  hermesBaseUrl: string | null;
-} {
-  const provider = (process.env.LLM_PROVIDER ?? 'groq').toLowerCase() === 'hermes'
-    ? 'hermes'
-    : 'groq';
-  const hermesConfigured = !!process.env.HERMES_API_KEY;
-  return {
-    provider,
-    hermesConfigured,
-    hermesModel: process.env.HERMES_MODEL ?? 'Hermes-4-405B',
-    hermesBaseUrl:
-      process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1',
-  };
-}
-
-/**
- * Build the wire shape returned by GET/PUT /api/skill. Centralized so the
- * PUT response and the GET response stay in lock-step (they both feed the
- * same React Query cache key).
- */
-function buildSkillState(row: {
-  skillContent: string | null;
-  skillApiKey: string | null;
-  skillName: string | null;
-  skillVersion: string | null;
-  skillDescription: string | null;
-  skillInstalledAt: Date | null;
+  sourceUrl: string | null;
+  contentHash: string;
+  content: string;
+  allowedHosts: string;
+  registerEndpoint: string | null;
+  statusEndpoint: string | null;
+  apiBase: string | null;
+  apiKey: string | null;
+  claimUrl: string | null;
+  verificationCode: string | null;
+  claimStatus: string;
+  lastHeartbeatAt: Date | null;
+  registeredName: string | null;
+  installedAt: Date;
   updatedAt: Date;
-} | null) {
-  const allowedHosts = extractSkillHosts(row?.skillContent);
-  const llm = llmStatus();
-  // The PM only injects the skill when Hermes is selected, content is
-  // present, the key is present, and the skill listed at least one host.
-  const pmActive =
-    llm.provider === 'hermes' &&
-    !!row?.skillContent &&
-    !!row?.skillApiKey &&
-    allowedHosts.length > 0;
+}
+
+/**
+ * Wire shape for /api/skills responses. Strips `content` (large) and
+ * `apiKey` (secret); surfaces everything the UI needs to render the
+ * connector card and the claim flow.
+ */
+function toWire(row: SkillRow) {
   return {
-    hasSkill: !!row?.skillContent,
-    hasKey: !!row?.skillApiKey,
-    keyTail: keyTail(row?.skillApiKey),
-    name: row?.skillName ?? null,
-    version: row?.skillVersion ?? null,
-    description: row?.skillDescription ?? null,
-    // Length only — don't ship the full markdown back on every poll.
-    contentLength: row?.skillContent?.length ?? 0,
-    installedAt: row?.skillInstalledAt ?? null,
-    updatedAt: row?.updatedAt ?? null,
-    allowedHosts,
-    llmProvider: llm.provider,
-    hermesConfigured: llm.hermesConfigured,
-    hermesModel: llm.hermesModel,
-    hermesBaseUrl: llm.hermesBaseUrl,
-    pmActive,
+    id: row.id,
+    agentRole: row.agentRole,
+    name: row.name,
+    version: row.version,
+    description: row.description,
+    sourceUrl: row.sourceUrl,
+    contentHash: row.contentHash,
+    contentLength: row.content.length,
+    allowedHosts: row.allowedHosts.split(',').filter(Boolean),
+    apiBase: row.apiBase,
+    registerEndpoint: row.registerEndpoint,
+    statusEndpoint: row.statusEndpoint,
+    hasApiKey: !!row.apiKey,
+    keyTail: keyTail(row.apiKey),
+    claimUrl: row.claimUrl,
+    verificationCode: row.verificationCode,
+    claimStatus: row.claimStatus,
+    lastHeartbeatAt: row.lastHeartbeatAt,
+    registeredName: row.registeredName,
+    installedAt: row.installedAt,
+    updatedAt: row.updatedAt,
   };
 }
 
-app.get('/api/skill', async (_req, res) => {
+const VALID_ROLES: AgentRole[] = ['pm', 'alm', 'router', 'executor'];
+
+async function fetchSkillContent(sourceUrl: string): Promise<string> {
+  let parsed: URL;
   try {
-    const row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
-    return res.json(buildSkillState(row));
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error(`sourceUrl not a valid URL: ${sourceUrl}`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`sourceUrl protocol must be https: got ${parsed.protocol}`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_SKILL_TIMEOUT_MS);
+  try {
+    const res = await fetch(sourceUrl, {
+      headers: { Accept: 'text/markdown, text/plain, */*' },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`fetch ${sourceUrl} → ${res.status} ${res.statusText}`);
+    }
+    const text = await res.text();
+    if (text.length > MAX_SKILL_CONTENT_BYTES) {
+      throw new Error(
+        `skill content > ${MAX_SKILL_CONTENT_BYTES / 1000}KB; rejected`,
+      );
+    }
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.get('/api/skills', async (_req, res) => {
+  try {
+    const rows = (await db().skill.findMany({
+      orderBy: { installedAt: 'desc' },
+    })) as SkillRow[];
+    return res.json({ skills: rows.map(toWire) });
+  } catch (err) {
+    log.error('list skills failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+interface SkillPostBody {
+  /** Either inline markdown content… */
+  content?: string;
+  /** …or a URL to fetch the SKILL.md from. One of the two is required. */
+  sourceUrl?: string;
+  /** Which swarm agent owns this install. */
+  agentRole: AgentRole;
+}
+
+app.post('/api/skills', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as Partial<SkillPostBody>;
+    if (!body.agentRole || !VALID_ROLES.includes(body.agentRole)) {
+      return res.status(400).json({
+        error: `agentRole required, one of: ${VALID_ROLES.join(', ')}`,
+      });
+    }
+    if (!body.content && !body.sourceUrl) {
+      return res
+        .status(400)
+        .json({ error: 'content or sourceUrl is required' });
+    }
+
+    let content: string;
+    let sourceUrl: string | null = null;
+    if (typeof body.sourceUrl === 'string' && body.sourceUrl.length > 0) {
+      try {
+        content = await fetchSkillContent(body.sourceUrl);
+      } catch (err) {
+        return res.status(400).json({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      sourceUrl = body.sourceUrl;
+    } else {
+      content = String(body.content ?? '');
+      if (content.length > MAX_SKILL_CONTENT_BYTES) {
+        return res
+          .status(413)
+          .json({ error: `skill content > ${MAX_SKILL_CONTENT_BYTES / 1000}KB` });
+      }
+    }
+    if (content.trim().length < 10) {
+      return res.status(400).json({ error: 'skill content too short' });
+    }
+
+    const discovered = discover(content);
+    const name = discovered.frontmatter.name?.trim();
+    if (!name) {
+      return res.status(400).json({
+        error:
+          'skill needs a `name:` field in YAML frontmatter (--- name: foo ---)',
+      });
+    }
+    if (!discovered.registerEndpoint) {
+      return res.status(400).json({
+        error:
+          'skill has no discoverable POST .../register or .../agents/register endpoint',
+        hint: 'this connector currently supports skills with a self-register flow',
+      });
+    }
+
+    // Self-register against the upstream. We do this BEFORE persisting
+    // so that a 4xx from the upstream surfaces as a clean error to the
+    // UI, not as an orphaned skill row that requires manual cleanup.
+    const reg = await selfRegister({
+      registerEndpoint: discovered.registerEndpoint,
+      agentRole: body.agentRole,
+      skillDescription: discovered.frontmatter.description,
+      allowedHosts: discovered.allowedHosts,
+    });
+    if (!reg.ok) {
+      log.warn('skill register failed', {
+        agentRole: body.agentRole,
+        name,
+        registerEndpoint: discovered.registerEndpoint,
+        status: reg.status,
+        err: reg.error,
+      });
+      return res.status(502).json({
+        error: `register failed: ${reg.error}`,
+        registerEndpoint: discovered.registerEndpoint,
+        upstreamStatus: reg.status,
+      });
+    }
+
+    const saved = (await db().skill.upsert({
+      where: { agentRole_name: { agentRole: body.agentRole, name } },
+      create: {
+        agentRole: body.agentRole,
+        name,
+        version: discovered.frontmatter.version,
+        description: discovered.frontmatter.description,
+        sourceUrl,
+        contentHash: hashContent(content),
+        content,
+        allowedHosts: discovered.allowedHosts.join(','),
+        registerEndpoint: discovered.registerEndpoint,
+        statusEndpoint: discovered.statusEndpoint,
+        apiBase: discovered.apiBase,
+        apiKey: reg.apiKey ?? null,
+        claimUrl: reg.claimUrl ?? null,
+        verificationCode: reg.verificationCode ?? null,
+        claimStatus: reg.claimUrl ? 'pending_claim' : 'unknown',
+        registeredName: reg.registeredName ?? null,
+      },
+      update: {
+        version: discovered.frontmatter.version,
+        description: discovered.frontmatter.description,
+        sourceUrl,
+        contentHash: hashContent(content),
+        content,
+        allowedHosts: discovered.allowedHosts.join(','),
+        registerEndpoint: discovered.registerEndpoint,
+        statusEndpoint: discovered.statusEndpoint,
+        apiBase: discovered.apiBase,
+        // Reuse existing key when re-installing the same skill — re-
+        // registering would mint a fresh identity and orphan the
+        // upstream agent. Only refresh on /refresh-status if explicitly
+        // requested.
+        apiKey: reg.apiKey ?? null,
+        claimUrl: reg.claimUrl ?? null,
+        verificationCode: reg.verificationCode ?? null,
+        claimStatus: reg.claimUrl ? 'pending_claim' : 'unknown',
+        registeredName: reg.registeredName ?? null,
+      },
+    })) as SkillRow;
+
+    log.info('skill installed + registered', {
+      id: saved.id,
+      agentRole: saved.agentRole,
+      name: saved.name,
+      keyTail: keyTail(saved.apiKey),
+      registerEndpoint: saved.registerEndpoint,
+      statusEndpoint: saved.statusEndpoint,
+      claimStatus: saved.claimStatus,
+    });
+
+    return res.status(201).json({ skill: toWire(saved) });
+  } catch (err) {
+    log.error('install skill failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.get('/api/skills/:id', async (req, res) => {
+  try {
+    const row = (await db().skill.findUnique({
+      where: { id: req.params.id },
+    })) as SkillRow | null;
+    if (!row) return res.status(404).json({ error: 'skill not found' });
+    return res.json({ skill: toWire(row) });
   } catch (err) {
     log.error('get skill failed', {
       err: err instanceof Error ? err.message : String(err),
@@ -561,108 +698,15 @@ app.get('/api/skill', async (_req, res) => {
   }
 });
 
-interface SkillPutBody {
-  /** Paste the full skill markdown. `null` to clear, omitted to leave alone. */
-  content?: string | null;
-  /** Paste the API key. `null` (or `clearKey:true`) to clear. */
-  apiKey?: string | null;
-  clearKey?: boolean;
-}
-
-app.put('/api/skill', async (req, res) => {
+app.delete('/api/skills/:id', async (req, res) => {
   try {
-    const body = (req.body ?? {}) as SkillPutBody;
-    const existing =
-      (await db().swarmSettings.findUnique({ where: { id: 'global' } })) ?? null;
-
-    // Resolve the new content + frontmatter. `undefined` = leave alone,
-    // `null` = clear, string = overwrite + reparse.
-    let nextContent: string | null;
-    let nextFm: SkillFrontmatter;
-    if (body.content === null) {
-      nextContent = null;
-      nextFm = { name: null, version: null, description: null };
-    } else if (typeof body.content === 'string') {
-      if (body.content.length > 200_000) {
-        return res.status(413).json({ error: 'skill content > 200KB rejected' });
-      }
-      nextContent = body.content;
-      nextFm = parseSkillFrontmatter(body.content);
-    } else {
-      nextContent = existing?.skillContent ?? null;
-      nextFm = {
-        name: existing?.skillName ?? null,
-        version: existing?.skillVersion ?? null,
-        description: existing?.skillDescription ?? null,
-      };
+    await db().skill.delete({ where: { id: req.params.id } });
+    log.info('skill uninstalled', { id: req.params.id });
+    return res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Record to delete')) {
+      return res.status(404).json({ error: 'skill not found' });
     }
-
-    const isClearingKey = body.clearKey === true || body.apiKey === null;
-    const nextKey =
-      isClearingKey
-        ? null
-        : typeof body.apiKey === 'string' && body.apiKey.length > 0
-          ? body.apiKey
-          : (existing?.skillApiKey ?? null);
-
-    // First-install timestamp: stamp once when the row goes from "no
-    // skill" to "skill present", and clear when content is cleared.
-    const wasInstalled = !!existing?.skillContent;
-    const willBeInstalled = !!nextContent;
-    const nextInstalledAt = willBeInstalled
-      ? wasInstalled
-        ? (existing?.skillInstalledAt ?? new Date())
-        : new Date()
-      : null;
-
-    const next = {
-      skillContent: nextContent,
-      skillName: nextFm.name,
-      skillVersion: nextFm.version,
-      skillDescription: nextFm.description,
-      skillApiKey: nextKey,
-      skillInstalledAt: nextInstalledAt,
-    };
-
-    const saved = await db().swarmSettings.upsert({
-      where: { id: 'global' },
-      update: next,
-      create: { id: 'global', ...next },
-    });
-
-    log.info('skill updated', {
-      name: saved.skillName,
-      version: saved.skillVersion,
-      hasKey: !!saved.skillApiKey,
-      keyTail: keyTail(saved.skillApiKey),
-      contentLength: saved.skillContent?.length ?? 0,
-      allowedHosts: extractSkillHosts(saved.skillContent),
-    });
-
-    return res.json(buildSkillState(saved));
-  } catch (err) {
-    log.error('update skill failed', {
-      err: err instanceof Error ? err.message : String(err),
-    });
-    return res.status(500).json({ error: 'internal error' });
-  }
-});
-
-app.delete('/api/skill', async (_req, res) => {
-  try {
-    await db().swarmSettings.update({
-      where: { id: 'global' },
-      data: {
-        skillContent: null,
-        skillName: null,
-        skillVersion: null,
-        skillDescription: null,
-        skillApiKey: null,
-        skillInstalledAt: null,
-      },
-    });
-    return res.json({ hasSkill: false, hasKey: false });
-  } catch (err) {
     log.error('delete skill failed', {
       err: err instanceof Error ? err.message : String(err),
     });
@@ -670,104 +714,25 @@ app.delete('/api/skill', async (_req, res) => {
   }
 });
 
-// =====================================================================
-// Hermes connection test
-// =====================================================================
-//
-// Smoke-tests the configured Hermes endpoint with a one-token chat
-// completion. The UI calls this from the connector card after a user
-// pastes their key/configures env so they get instant "yes, your Hermes
-// is reachable" feedback instead of waiting for the next PM tick to
-// blow up.
-//
-// Why a custom fetch instead of the OpenAI SDK? Keeps agents/api free
-// of an SDK dep just to issue one HTTP POST — the request body is OAI-
-// compatible and tiny. We propagate the upstream status code and the
-// first line of the error so the UI can surface "401: invalid api key"
-// or "404: model not found" without us guessing.
-
-const HERMES_TEST_TIMEOUT_MS = 10_000;
-
-app.post('/api/hermes/test', async (_req, res) => {
-  const apiKey = process.env.HERMES_API_KEY ?? '';
-  const baseUrl =
-    process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1';
-  const model = process.env.HERMES_MODEL ?? 'Hermes-4-405B';
-
-  if (!apiKey) {
-    return res.status(400).json({
-      ok: false,
-      error: 'HERMES_API_KEY not set on the agents server',
-      hint: 'set HERMES_API_KEY in agents/.env and restart the API',
-    });
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HERMES_TEST_TIMEOUT_MS);
-  const started = Date.now();
+/**
+ * Manual claim-status refresh. The background heartbeat poller already
+ * does this every minute; this endpoint exists so the UI can give
+ * users an immediate "I just claimed, did it work?" affordance.
+ */
+app.post('/api/skills/:id/refresh-status', async (req, res) => {
   try {
-    const upstream = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        max_tokens: 8,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: 'Reply with the single word: ok',
-          },
-        ],
-      }),
-    });
-
-    const latencyMs = Date.now() - started;
-    const text = await upstream.text();
-    let parsed: { choices?: Array<{ message?: { content?: string } }> } | null = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // Non-JSON upstream response — pass the first 200 chars through.
-    }
-    if (!upstream.ok) {
-      return res.status(502).json({
-        ok: false,
-        status: upstream.status,
-        latencyMs,
-        model,
-        baseUrl,
-        error: text.slice(0, 200),
-      });
-    }
-    const sample = parsed?.choices?.[0]?.message?.content?.trim() ?? null;
-    return res.json({
-      ok: true,
-      status: upstream.status,
-      latencyMs,
-      model,
-      baseUrl,
-      sample,
-    });
+    const { heartbeatSweep } = await import('./skills.js');
+    const touched = await heartbeatSweep(log);
+    const row = (await db().skill.findUnique({
+      where: { id: req.params.id },
+    })) as SkillRow | null;
+    if (!row) return res.status(404).json({ error: 'skill not found' });
+    return res.json({ skill: toWire(row), polled: touched });
   } catch (err) {
-    return res.status(502).json({
-      ok: false,
-      latencyMs: Date.now() - started,
-      model,
-      baseUrl,
-      error:
-        err instanceof Error
-          ? err.name === 'AbortError'
-            ? `timed out after ${HERMES_TEST_TIMEOUT_MS}ms`
-            : err.message
-          : String(err),
+    log.error('refresh skill status failed', {
+      err: err instanceof Error ? err.message : String(err),
     });
-  } finally {
-    clearTimeout(timer);
+    return res.status(500).json({ error: 'internal error' });
   }
 });
 
@@ -930,4 +895,8 @@ app.post('/internal/report/daily', async (req, res) => {
 
 app.listen(PORT, () => {
   log.info('api up', { port: PORT, allowedOrigins: ALLOWED_ORIGINS });
+  // Skill heartbeat — polls each installed skill's status endpoint
+  // every minute to flip claim_status from `pending_claim` → `claimed`
+  // once the human completes verification on the upstream's site.
+  startHeartbeatLoop(log);
 });
