@@ -8,15 +8,10 @@ import { useWalletTransactions } from '@/hooks/usePortfolio';
 import { useSwarmStatus, type IntentLogRow } from '@/hooks/useSwarmStatus';
 import { describeTransaction } from '@/lib/transactions';
 import { formatRelative } from '@/lib/format';
+import { AgentActivityStream } from '@/components/swarm/AgentActivityStream';
 
 export function RightRail() {
   const { isConnected } = useAccount();
-  const txs = useWalletTransactions({ pageSize: 8 });
-  const qc = useQueryClient();
-
-  const refresh = () => {
-    qc.invalidateQueries({ queryKey: ['zerion', 'transactions'] });
-  };
 
   return (
     <aside className="w-80 shrink-0 border-l border-border h-screen sticky top-0 p-4 overflow-y-auto space-y-6">
@@ -25,28 +20,10 @@ export function RightRail() {
       <WalletButton />
       <SwarmStatusLine />
 
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold">Recent activity</h2>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={refresh}
-            disabled={!isConnected || txs.isFetching}
-            title="Refresh transactions"
-          >
-            {txs.isFetching ? '…' : '↻'}
-          </Button>
-        </div>
-        <RecentActivity
-          isConnected={isConnected}
-          isLoading={txs.isLoading}
-          error={txs.error}
-          data={txs.data?.data}
-        />
-      </section>
-
-      <IntentsLog />
+      {/* Single activity surface — agent thoughts, decisions, and tx
+          receipts in one human-readable stream. Replaces the old
+          dual "Recent activity" (Zerion) + "Intents log" split. */}
+      <AgentActivityStream />
     </aside>
   );
 }
