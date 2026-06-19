@@ -66,10 +66,12 @@ export function useSwarmStatus() {
         return {
           safeAddress: '',
           activated: false,
+          riskProfile: 'balanced',
+          customConfig: null,
           sessions: [],
           agents: FALLBACK_AGENTS,
           intents: [],
-        };
+        } satisfies SwarmStatus;
       }
       const res = await fetch(
         `${AGENTS_API_URL}/api/status/${safeAddress.toLowerCase()}`,
