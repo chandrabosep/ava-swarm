@@ -99,9 +99,20 @@ function alchemyToZerionPosition(t: AlchemyToken): ZerionPosition | null {
   const whole = raw / div;
   const frac = raw % div;
   const balance = parseFloat(`${whole}.${frac.toString().padStart(dec, '0')}`);
-  const symbol =
+  // Canonicalize: every chain's native asset is rendered as ETH so the
+  // allocation chart aggregates Sepolia + Base Sepolia native balances
+  // into a single ETH row instead of showing two separate "ETH" entries.
+  // Same for stablecoins that some chains label differently.
+  const rawSym = (
     t.tokenMetadata?.symbol ??
-    (t.tokenAddress === null ? 'ETH' : 'UNKNOWN');
+    (t.tokenAddress === null ? 'ETH' : '')
+  ).toUpperCase();
+  const symbol =
+    t.tokenAddress === null
+      ? 'ETH'
+      : rawSym === 'USDBC' || rawSym === 'USDCE'
+        ? 'USDC'
+        : rawSym || 'UNKNOWN';
   const usd = t.tokenPrices?.find((p) => p.currency.toLowerCase() === 'usd');
   const price = usd ? parseFloat(usd.value) : fallbackPrice(symbol);
   const value = balance * price;
@@ -142,15 +153,46 @@ function alchemyToZerionPosition(t: AlchemyToken): ZerionPosition | null {
   };
 }
 
-/** Drop-in replacement for `getFungiblePositions` that hits Alchemy. */
+/** Drop-in replacement for `getFungiblePositions` that hits Alchemy.
+ *  Rolls up positions by SYMBOL so ETH-on-sepolia and ETH-on-base-sepolia
+ *  combine into a single ETH row — matches what users expect to see in
+ *  the allocation chart, and avoids React-key collisions downstream. */
 export async function getAlchemyPositions(
   address: string,
 ): Promise<ZerionPositionsResponse> {
   const raw = await fetchAlchemyTokens(address.toLowerCase());
-  const data = raw
+  const positions = raw
     .map(alchemyToZerionPosition)
     .filter((p): p is ZerionPosition => p !== null);
-  return { data };
+
+  // Aggregate by symbol — sum balances + USD values, keep first chain's
+  // metadata, generate a stable id from the symbol for React keys.
+  const bySymbol = new Map<string, ZerionPosition>();
+  for (const p of positions) {
+    const sym = p.attributes.fungible_info.symbol;
+    const existing = bySymbol.get(sym);
+    if (!existing) {
+      bySymbol.set(sym, { ...p, id: `alchemy:agg:${sym}` });
+      continue;
+    }
+    const ev = existing.attributes.value ?? 0;
+    const pv = p.attributes.value ?? 0;
+    const eq = existing.attributes.quantity.float;
+    const pq = p.attributes.quantity.float;
+    const totalQ = eq + pq;
+    existing.attributes.value = ev + pv;
+    existing.attributes.quantity = {
+      ...existing.attributes.quantity,
+      float: totalQ,
+      numeric: String(totalQ),
+    };
+    // Merge implementations so the symbol resolves on either chain
+    existing.attributes.fungible_info.implementations = [
+      ...existing.attributes.fungible_info.implementations,
+      ...p.attributes.fungible_info.implementations,
+    ];
+  }
+  return { data: Array.from(bySymbol.values()) };
 }
 
 /** Drop-in replacement for `getWalletPortfolio`. We fold Alchemy rows

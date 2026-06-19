@@ -43,7 +43,17 @@ const RANGES: Array<[Intl.RelativeTimeFormatUnit, number]> = [
   ['second', 1],
 ];
 
-export function formatRelative(unixMs: number, now: number = Date.now()): string {
+export function formatRelative(
+  when: number | string | Date,
+  now: number = Date.now(),
+): string {
+  // Accept epoch ms, ISO string, or Date — defensive because intent
+  // payloads from the agents API arrive as ISO strings.
+  let unixMs: number;
+  if (typeof when === 'number') unixMs = when;
+  else if (when instanceof Date) unixMs = when.getTime();
+  else unixMs = Date.parse(when);
+  if (!Number.isFinite(unixMs)) return '—';
   const deltaSec = Math.round((unixMs - now) / 1000);
   const abs = Math.abs(deltaSec);
   for (const [unit, secInUnit] of RANGES) {

@@ -3,6 +3,7 @@ import { Surface } from '@/components/common/Surface';
 import { useFungiblePositions } from '@/hooks/usePortfolio';
 import { summarizePositions } from '@/lib/portfolio';
 import { formatPct, formatUsd } from '@/lib/format';
+import { USE_TESTNET } from '@/config/swarm';
 
 const SLICE_COLORS = [
   'bg-accent',
@@ -32,7 +33,9 @@ export function AllocationChart() {
               ? 'loading'
               : positions.error
                 ? 'error'
-                : 'live · zerion'}
+                : USE_TESTNET
+                  ? 'live · alchemy'
+                  : 'live · zerion'}
         </span>
       </div>
 
@@ -47,7 +50,7 @@ export function AllocationChart() {
         ) : (
           allocations.map((slice, i) => (
             <div
-              key={slice.symbol}
+              key={`${slice.symbol}-${i}`}
               className={SLICE_COLORS[i % SLICE_COLORS.length]}
               style={{ width: `${slice.pct * 100}%` }}
               title={`${slice.symbol}: ${formatPct(slice.pct)}`}
@@ -62,7 +65,7 @@ export function AllocationChart() {
             {!isConnected
               ? 'Connect a wallet to see your token allocation.'
               : positions.isLoading
-                ? 'Fetching positions from Zerion…'
+                ? `Fetching positions from ${USE_TESTNET ? 'Alchemy' : 'Zerion'}…`
                 : positions.error
                   ? 'Could not load positions.'
                   : 'No positions found for this address.'}
@@ -79,7 +82,7 @@ export function AllocationChart() {
         <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           {allocations.map((slice, i) => (
             <li
-              key={slice.symbol}
+              key={`${slice.symbol}-${i}`}
               className="flex items-center justify-between"
             >
               <span className="flex items-center gap-2">
