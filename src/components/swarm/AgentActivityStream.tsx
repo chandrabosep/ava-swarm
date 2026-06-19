@@ -127,11 +127,18 @@ interface AllocationPayload {
 interface RoutedPayload {
   kind?: 'routed';
   chain?: string;
+  venue?: string;
   tokenIn?: string;
   tokenOut?: string;
   amountIn?: string;
   notionalUsd?: number;
   origin?: string;
+  /** Present when this intent was settled via OTC mesh instead of Uniswap. */
+  otc?: {
+    peerWallet?: string;
+    savedUsd?: number;
+    settlementId?: string;
+  };
 }
 
 interface ReceiptPayload {
@@ -209,23 +216,28 @@ function RoutedRow({
   const tIn = symbolOf(payload.tokenIn ?? '');
   const tOut = symbolOf(payload.tokenOut ?? '');
   const usd = payload.notionalUsd ?? 0;
-  const tone =
-    status === 'executed'
+  const isOtc = payload.venue === 'otc-mesh' || !!payload.otc;
+  const tone = isOtc
+    ? 'accent'
+    : status === 'executed'
       ? 'positive'
       : status === 'failed'
         ? 'negative'
         : 'warning';
   const chain = chainSlug(payload.chain);
+  const statusLabel = isOtc ? 'OTC matched' : status;
   return (
     <div className="flex gap-3">
       <div
         className={`shrink-0 size-7 rounded-full ${av.bg} ring-1 ${av.ring} flex items-center justify-center text-sm`}
       >
-        {av.emoji}
+        {isOtc ? '⇌' : av.emoji}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-xs font-medium text-fg">Router</span>
+          <span className="text-xs font-medium text-fg">
+            {isOtc ? 'Router · OTC' : 'Router'}
+          </span>
           <span className="text-[10px] text-fg-subtle">
             {formatRelative(intent.createdAt)}
           </span>
@@ -237,22 +249,41 @@ function RoutedRow({
           <span className="ml-auto font-mono text-fg-muted">
             ${usd.toFixed(2)}
           </span>
-          <Badge tone={tone}>{status}</Badge>
+          <Badge tone={tone}>{statusLabel}</Badge>
         </div>
         <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-subtle">
-          {payload.chain && <span>on {payload.chain}</span>}
-          {intent.txHash ? (
-            <a
-              href={txUrl(intent.txHash, chain)}
-              target="_blank"
-              rel="noreferrer"
-              className="font-mono underline decoration-dotted hover:text-accent"
-            >
-              {intent.txHash.slice(0, 10)}…{intent.txHash.slice(-4)} ↗
-            </a>
-          ) : status === 'executed' ? (
-            <span className="text-warning">no txHash recorded</span>
-          ) : null}
+          {isOtc ? (
+            <>
+              <span className="text-accent">via AXL mesh · skipped Uniswap</span>
+              {payload.otc?.savedUsd != null && (
+                <span className="text-positive">
+                  saved ${payload.otc.savedUsd.toFixed(2)}
+                </span>
+              )}
+              {payload.otc?.peerWallet && (
+                <span className="font-mono">
+                  ↔ {payload.otc.peerWallet.slice(0, 6)}…
+                  {payload.otc.peerWallet.slice(-4)}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              {payload.chain && <span>on {payload.chain}</span>}
+              {intent.txHash ? (
+                <a
+                  href={txUrl(intent.txHash, chain)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono underline decoration-dotted hover:text-accent"
+                >
+                  {intent.txHash.slice(0, 10)}…{intent.txHash.slice(-4)} ↗
+                </a>
+              ) : status === 'executed' ? (
+                <span className="text-warning">no txHash recorded</span>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
     </div>
