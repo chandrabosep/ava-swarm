@@ -57,7 +57,8 @@ function effectiveWallet(userEoa: string): string {
 
 export async function currentSlices(wallet: string): Promise<CurrentSlice[]> {
   const target = effectiveWallet(wallet);
-  if (env.useTestnet()) {
+  // Mirror PM's source-selection logic — see agents/pm/src/portfolio.ts.
+  if (env.useTestnet() || env.portfolioSource() === 'alchemy') {
     return currentSlicesAlchemy(target);
   }
   return currentSlicesZerion(target);

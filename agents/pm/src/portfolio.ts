@@ -79,7 +79,9 @@ const TOP_N_POSITIONS = 10;
 
 export async function snapshot(wallet: string): Promise<PortfolioSnapshot> {
   const target = effectiveWallet(wallet);
-  if (env.useTestnet()) {
+  // Alchemy on testnet always; on mainnet whenever PORTFOLIO_SOURCE=alchemy
+  // (Zerion proxy worker hits free-tier 429s under demo load).
+  if (env.useTestnet() || env.portfolioSource() === 'alchemy') {
     return snapshotAlchemy(target);
   }
   return snapshotZerion(target);
