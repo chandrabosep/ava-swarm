@@ -10,21 +10,24 @@
 
 import { bootAgent, startHeartbeat, TOPICS } from '@swarm/shared';
 import { startTick } from './tick.js';
+import { startDebateListener } from './debate.js';
 
 async function main() {
   const ctx = await bootAgent('alm');
   const stopHeartbeat = startHeartbeat(ctx);
   const stopTick = startTick(ctx);
+  const stopDebate = startDebateListener(ctx);
 
   ctx.log.info('ready', {
     role: 'alm',
-    publishes: TOPICS.almRebalance,
-    listens: [TOPICS.executorReceipt, TOPICS.heartbeat],
+    publishes: [TOPICS.almRebalance, TOPICS.almFeedback],
+    listens: [TOPICS.executorReceipt, TOPICS.heartbeat, TOPICS.pmDraft],
   });
 
   process.stdin.resume();
   void stopHeartbeat;
   void stopTick;
+  void stopDebate;
 }
 
 main().catch((err: unknown) => {

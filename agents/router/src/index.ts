@@ -33,6 +33,7 @@ import {
   settleMatch,
 } from './otc.js';
 import { preflightEnabled, preflightSwaps } from './preflight.js';
+import { startDebateListener } from './debate.js';
 
 /** Phase B-1: settle every intent on the user's primary chain. Override
  *  with PRIMARY_CHAIN env if you need to demo on a different chain.
@@ -186,6 +187,11 @@ async function main() {
   // OTC peer advert inbox — runs continuously, attempts cross-tenant matches.
   void consumeAdverts(ctx);
 
+  // Debate listener — pushes back on PM drafts that propose symbols
+  // we can't route on the primary chain.
+  const stopDebate = startDebateListener(ctx, { primaryChain: PRIMARY_CHAIN });
+  void stopDebate;
+
   // ALM rebalance inbox
   void (async () => {
     for await (const msg of ctx.axl.subscribe<SwarmMessage<RebalanceIntent>>(
@@ -205,8 +211,8 @@ async function main() {
 
   ctx.log.info('ready', {
     role: 'router',
-    publishes: TOPICS.routerRouted,
-    listens: [TOPICS.pmAllocation, TOPICS.almRebalance],
+    publishes: [TOPICS.routerRouted, TOPICS.routerFeedback],
+    listens: [TOPICS.pmAllocation, TOPICS.almRebalance, TOPICS.pmDraft],
   });
 
   process.stdin.resume();

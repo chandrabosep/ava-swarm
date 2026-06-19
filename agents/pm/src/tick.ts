@@ -16,6 +16,7 @@ import {
 
 import { snapshot } from './portfolio.js';
 import { decideAllocation } from './decide.js';
+import { runDebate } from './debate.js';
 
 // Outer loop fires every 30s. The per-user gate (profile.cadenceMinutes)
 // inside tickUser() is what actually decides whether the LLM gets called.
@@ -116,11 +117,27 @@ async function tickUser(
     return;
   }
 
-  const intent = await decideAllocation({
+  const draftIntent = await decideAllocation({
     walletAddress,
     snapshot: pf,
     toleranceBps: profile.toleranceBps,
     riskProfile: profileName,
+  });
+
+  // Inter-agent debate round: PM publishes the draft, ALM + Router post
+  // feedback within the debate window, PM reconciles. Result is the
+  // intent we actually persist + broadcast on pmAllocation. See
+  // agents/pm/src/debate.ts for the protocol details.
+  const debate = await runDebate(ctx, {
+    walletAddress,
+    intent: draftIntent,
+    profile: profileName,
+  });
+  const intent = debate.reconciled;
+  ctx.log.info('debate reconciled', {
+    walletAddress,
+    feedbackCount: debate.feedbackCount,
+    finalTargets: intent.targets,
   });
 
   // Persist for audit, then broadcast for Router.

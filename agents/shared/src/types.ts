@@ -76,6 +76,60 @@ export interface RoutedIntent {
   origin: string;
 }
 
+// --- Debate protocol -------------------------------------------------------
+//
+// Before PM commits to an allocation, it publishes a *draft* on
+// swarm.pm.draft. Peer agents (ALM, Router) listen on that topic and
+// post structured feedback to swarm.alm.feedback / swarm.router.feedback.
+// PM collects feedback for a short window (~2s), reconciles, then
+// publishes the final on swarm.pm.allocation.
+//
+// This is what the AXL transport is for in this codebase: real
+// inter-agent dialogue, not just one-way fanout.
+
+export interface DraftAllocation {
+  kind: 'draft';
+  /** Draft round id — random per draft so feedback can be correlated. */
+  draftId: string;
+  /** Target weights PM is *considering*. */
+  targets: Array<{ symbol: string; weight: number }>;
+  /** PM's preliminary rationale. ALM/Router may push back on it. */
+  rationale?: string;
+  /** Risk profile in effect. */
+  profile?: string;
+}
+
+/**
+ * ALM → PM debate feedback. ALM owns LP-position context, so it pushes
+ * back when a draft would force out-of-range or under-fund a pool.
+ */
+export interface AlmFeedback {
+  kind: 'alm.feedback';
+  draftId: string;
+  /** Free-text concern surfaced to the dashboard. */
+  concern?: string;
+  /** Per-symbol weight adjustments ALM suggests, additive. */
+  adjustments?: Array<{ symbol: string; deltaWeight: number; reason: string }>;
+  /** Severity drives whether PM must reconcile or can ignore. */
+  severity: 'info' | 'warn' | 'block';
+}
+
+/**
+ * Router → PM debate feedback. Router knows what's actually executable
+ * given Uniswap quote coverage + KH wallet balance, so it pushes back
+ * when a draft is unroutable.
+ */
+export interface RouterFeedback {
+  kind: 'router.feedback';
+  draftId: string;
+  concern?: string;
+  /** Symbols Router cannot route (no address / no Uniswap liquidity). */
+  unroutableSymbols?: string[];
+  /** Per-symbol notional caps Router can actually fulfill ($USD). */
+  notionalCaps?: Array<{ symbol: string; capUsd: number }>;
+  severity: 'info' | 'warn' | 'block';
+}
+
 /**
  * Executor → everyone: "this is what I did."
  */
