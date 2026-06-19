@@ -86,7 +86,8 @@ export function buildTypedData(
     domain: {
       name: 'DeFi Swarm',
       version: '1',
-      chainId,
+      // viem expects chainId as bigint in typed data domains.
+      chainId: BigInt(chainId),
     },
     types: TYPES,
     primaryType: 'SwarmDelegation' as const,

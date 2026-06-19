@@ -225,7 +225,7 @@ export async function getAlchemyPortfolio(
   }
   return {
     data: {
-      type: 'portfolio',
+      type: 'portfolios',
       id: address.toLowerCase(),
       attributes: {
         positions_distribution_by_type: {
