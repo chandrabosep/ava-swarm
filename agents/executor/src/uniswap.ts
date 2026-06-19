@@ -19,8 +19,10 @@ export interface QuoteRequest {
   tokenOut: `0x${string}`;
   /** base-unit string. */
   amountIn: string;
-  /** Recipient — typically the Safe address. */
+  /** Address that will execute the swap. Must hold the input token. */
   swapper: `0x${string}`;
+  /** Where the output token lands. Defaults to the swapper. */
+  recipient?: `0x${string}`;
   /** Slippage in bps (50 = 0.5%). Defaults to 50. */
   slippageBps?: number;
 }
@@ -60,9 +62,17 @@ async function uni<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function quote(req: QuoteRequest): Promise<Quote> {
-  const slippageBps = req.slippageBps ?? 50;
-  const raw = await uni<{
+  // Larger default slippage so tiny demo swaps (~$1) don't revert at the
+  // router's slippage check — gas + impact at micro size easily exceeds
+  // the typical 0.5% buffer.
+  const slippageBps = req.slippageBps ?? 500;
+
+  // Step 1: /quote — returns the route + amounts. Modern API doesn't
+  // include methodParameters here; we have to follow up with /swap.
+  const quoteRes = await uni<{
     quote: Record<string, unknown>;
+    routing?: string;
+    permitData?: unknown;
     methodParameters?: { calldata: string; value: string; to: string };
   }>('/quote', {
     type: 'EXACT_INPUT',
@@ -72,20 +82,49 @@ export async function quote(req: QuoteRequest): Promise<Quote> {
     tokenOutChainId: CHAIN_ID[req.chain],
     amount: req.amountIn,
     swapper: req.swapper,
+    ...(req.recipient ? { recipient: req.recipient } : {}),
     slippageTolerance: slippageBps / 100,
   });
 
-  // The API has shipped two response shapes — older one nests
-  // methodParameters inside `quote`, newer one puts it at the root. We
-  // accept either to keep this resilient across deploys.
-  const q = raw.quote as Record<string, unknown> & {
+  const q = quoteRes.quote as Record<string, unknown> & {
     methodParameters?: { calldata: string; value: string; to: string };
   };
-  const m = raw.methodParameters ?? q.methodParameters;
+
+  // Some legacy deployments still nest methodParameters in the quote
+  // body. Use those when present.
+  let m = quoteRes.methodParameters ?? q.methodParameters;
+
+  // Step 2: /swap — pass the quote response back, get methodParameters.
+  // Required for newer Trading API responses where /quote skips the
+  // calldata so a permit signing round-trip can happen in between for
+  // ERC-20 inputs. Native-ETH swaps (permitData: null) skip the sign
+  // step but still need this /swap call.
+  if (!m) {
+    const swapRes = await uni<{
+      swap?: { to: string; from: string; data: string; value: string };
+      methodParameters?: { calldata: string; value: string; to: string };
+    }>('/swap', {
+      quote: quoteRes.quote,
+      // Optional permit signature would go here for ERC-20 inputs that
+      // had a permitData payload. ETH input has permitData=null so we
+      // skip it.
+    });
+
+    if (swapRes.swap) {
+      m = {
+        to: swapRes.swap.to,
+        calldata: swapRes.swap.data,
+        value: swapRes.swap.value ?? '0',
+      };
+    } else if (swapRes.methodParameters) {
+      m = swapRes.methodParameters;
+    }
+  }
 
   if (!m) {
+    const summary = JSON.stringify(quoteRes).slice(0, 600);
     throw new Error(
-      'Uniswap /quote returned no methodParameters — is the swapper address correct + has it approved Permit2?',
+      `Uniswap /swap also returned no methodParameters. Quote was: ${summary}`,
     );
   }
 
@@ -100,6 +139,6 @@ export async function quote(req: QuoteRequest): Promise<Quote> {
       typeof q.priceImpactUsd === 'number' ? q.priceImpactUsd : undefined,
     gasEstimate:
       typeof q.gasUseEstimate === 'string' ? q.gasUseEstimate : undefined,
-    raw,
+    raw: quoteRes,
   };
 }

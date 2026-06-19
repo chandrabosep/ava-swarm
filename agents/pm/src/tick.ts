@@ -64,16 +64,46 @@ async function tickUser(
   ctx: AgentContext,
   safeAddress: string,
 ): Promise<void> {
+  // Read user's risk profile + per-knob overrides to derive the
+  // effective config. PM uses the merged values for prompt/tolerance/
+  // cadence on every tick.
+  const user = (await db().user.findUnique({ where: { safeAddress } })) as
+    | { riskProfile?: string; customConfig?: Record<string, unknown> | null }
+    | null;
+  const { resolveConfig } = await import('./profiles.js');
+  const { name: profileName, config: profile } = resolveConfig(
+    user?.riskProfile,
+    user?.customConfig as never,
+  );
+
+  // Cadence gate: skip if PM ticked for this user too recently.
+  const lastTick = await db().agentState.findUnique({
+    where: { agent_safeAddress: { agent: 'pm', safeAddress } },
+  });
+  const lastMs =
+    (lastTick?.state as { lastTick?: number } | null)?.lastTick ?? 0;
+  const ageSec = (Date.now() - lastMs) / 1000;
+  if (ageSec < profile.cadenceMinutes * 60) {
+    return; // not due yet for this profile
+  }
+
+  ctx.log.info('ticking user', { safeAddress, profile: profileName });
   const pf = await snapshot(safeAddress);
-  if (pf.totalValueUsd < 1) {
-    // Nothing to allocate yet.
+  ctx.log.info('portfolio snapshot', {
+    safeAddress,
+    totalValueUsd: pf.totalValueUsd,
+    positions: pf.positions.length,
+  });
+  if (pf.totalValueUsd <= 0) {
+    ctx.log.info('skipping — empty portfolio', { safeAddress });
     return;
   }
 
   const intent = await decideAllocation({
     safeAddress,
     snapshot: pf,
-    toleranceBps: DEFAULT_TOLERANCE_BPS,
+    toleranceBps: profile.toleranceBps,
+    riskProfile: profileName,
   });
 
   // Persist for audit, then broadcast for Router.
@@ -109,11 +139,25 @@ async function tickUser(
     fromAgent: 'pm',
     safeAddress,
     ts: Date.now(),
+    intentId: row.id,
     payload: intent,
   };
-  await ctx.axl.publish({ topic: TOPICS.pmAllocation, payload: msg });
+  // Three-layer transport: AXL gossip (multi-host), PG LISTEN/NOTIFY
+  // (single-host instant), DB poll (resilience — already persistent
+  // from the upstream upsert). Fan out to all three in parallel.
+  const [axlPub] = await Promise.all([
+    ctx.axl.publish({ topic: TOPICS.pmAllocation, payload: msg }),
+    ctx.pg.publish({
+      topic: TOPICS.pmAllocation,
+      from: ctx.role,
+      payload: msg,
+    }),
+  ]);
   ctx.log.info('allocation proposed', {
     safeAddress,
     targets: intent.targets,
+    axlDelivered: axlPub.delivered,
+    transport:
+      axlPub.delivered > 0 ? 'axl+pg' : 'pg+db-poll-fallback',
   });
 }

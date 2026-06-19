@@ -1,37 +1,39 @@
 import { AgentCard } from './AgentCard';
-import { useSwarmStatus, liveStatus } from '@/hooks/useSwarmStatus';
+import { useSwarmStatus } from '@/hooks/useSwarmStatus';
 import type { Agent, AgentRole } from '@/types';
 
 const ROLES: AgentRole[] = ['pm', 'alm', 'router', 'executor'];
 
 export function AgentStatusPanel() {
   const status = useSwarmStatus();
-  const liveByRole = new Map(status.data?.agents.map((a) => [a.role, a]));
 
+  // Build the displayed cards from live runtime rows. Fall back to
+  // offline placeholders when the API hasn't responded yet so the grid
+  // doesn't pop in.
   const agents: Agent[] = ROLES.map((role) => {
-    const live = liveByRole.get(role);
+    const live = status.data?.agents.find((a) => a.role === role);
     return {
       id: `agent-${role}`,
       role,
-      status: liveStatus(live?.lastSeen),
-      lastSeen: live?.lastSeen ?? 0,
+      status: live?.status ?? 'offline',
+      lastSeen: live?.lastSeenMs ?? 0,
     };
   });
 
-  const meshLabel = status.isLoading
-    ? 'connecting…'
-    : status.isError
-      ? 'mesh unreachable'
-      : agents.some((a) => a.status !== 'offline')
-        ? `live · ${agents.filter((a) => a.status !== 'offline').length}/4 online`
-        : 'live · all idle';
+  const onlineCount = agents.filter((a) => a.status !== 'offline').length;
+  const tag =
+    onlineCount === 0
+      ? 'runtime · not yet connected'
+      : onlineCount === ROLES.length
+        ? 'runtime · all agents online'
+        : `runtime · ${onlineCount} of ${ROLES.length} online`;
 
   return (
     <section>
       <div className="flex items-baseline justify-between mb-3">
         <h2 className="text-sm font-semibold">Agent swarm</h2>
         <span className="text-[11px] text-fg-subtle uppercase tracking-wider">
-          {meshLabel}
+          {tag}
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

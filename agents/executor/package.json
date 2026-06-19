@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@swarm/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.0.4",
     "viem": "^2.21.0",
     "permissionless": "^0.2.0"
   },

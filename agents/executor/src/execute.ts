@@ -25,6 +25,8 @@ import { quote } from './uniswap.js';
 import { submitJob, waitForJob } from './keeperhub.js';
 import { loadExecutorSession } from './sessions.js';
 
+const MOCK = (process.env.EXECUTOR_MOCK ?? '').toLowerCase() === 'true';
+
 export interface ExecuteParams {
   ctx: AgentContext;
   intentId: string;
@@ -45,6 +47,50 @@ export async function execute({
     data: { status: 'executing' },
   });
 
+  // Mock path — short-circuit Uniswap + KeeperHub, write a synthetic
+  // success receipt. Used when the demo target chain doesn't have
+  // Uniswap Trading API support (Sepolia, Unichain Sepolia, etc.) but
+  // we still want the dashboard to show end-to-end green.
+  if (MOCK) {
+    await sleep(800); // pretend we hit Uniswap + the bundler
+    const txHash = synthTxHash(intentId);
+    log.info('mock executed', { txHash, notionalUsd: intent.notionalUsd });
+
+    await db().intent.update({
+      where: { id: intentId },
+      data: { status: 'executed' },
+    });
+    await db().event.create({
+      data: {
+        safeAddress,
+        agent: 'executor',
+        kind: 'intent.executed',
+        payload: { intentId, txHash, mock: true },
+      },
+    });
+    const receipt: ExecutionReceipt = {
+      kind: 'receipt',
+      intentId,
+      txHash: txHash as Hex,
+      status: 'mined',
+      blockNumber: 0n,
+    };
+    await ctx.axl
+      .publish({
+        topic: TOPICS.executorReceipt,
+        payload: {
+          fromAgent: 'executor',
+          safeAddress,
+          ts: Date.now(),
+          payload: receipt,
+        },
+      })
+      .catch(() => {
+        // best-effort
+      });
+    return;
+  }
+
   try {
     // 1. Session
     const session = await loadExecutorSession(safeAddress);
@@ -52,15 +98,24 @@ export async function execute({
       throw new Error('No active Executor session for this Safe.');
     }
 
-    // 2. Quote — single call. /quote returns methodParameters (Universal
-    //    Router calldata) directly, no separate /swap hop.
+    // 2. Quote — Trading API builds a route assuming `swapper` is the
+    //    address that will execute. Since KeeperHub broadcasts from its
+    //    org-managed wallet, we pass that wallet's address (not the
+    //    user's EOA) so Uniswap emits the right command list (e.g.
+    //    WRAP_ETH from msg.value when the wallet only holds native ETH).
+    //    Output recipient is still the user's EOA below via the route's
+    //    embedded recipient parameter.
     log.info('quoting');
+    const keeperhubWallet =
+      (process.env.KEEPERHUB_WALLET_ADDRESS as `0x${string}` | undefined) ??
+      safeAddress;
     const swap = await quote({
       chain: intent.chain,
       tokenIn: intent.tokenIn as `0x${string}`,
       tokenOut: intent.tokenOut as `0x${string}`,
       amountIn: intent.amountIn,
-      swapper: safeAddress,
+      swapper: keeperhubWallet,
+      recipient: safeAddress,
     });
 
     // 4. Sign. We sign the keccak256 of (to, data, value, intentId) as a
@@ -78,7 +133,11 @@ export async function execute({
       message: { raw: digest as Hex },
     })) as Hex;
 
-    // 5. Submit
+    // 5. Submit. We pass the swap params (tokens + amount + recipient)
+    //    so KH's `execute_protocol_action` can build the route itself —
+    //    much more robust than handing it raw Universal Router calldata.
+    //    The to/data/value/signature are kept for audit but ignored by
+    //    the protocol-action path.
     log.info('submitting to keeperhub');
     const { jobId } = await submitJob({
       chain: intent.chain,
@@ -88,6 +147,12 @@ export async function execute({
       value: swap.value,
       signature,
       metadata: { intentId, agent: 'executor' },
+      swap: {
+        tokenIn: intent.tokenIn as `0x${string}`,
+        tokenOut: intent.tokenOut as `0x${string}`,
+        amountIn: intent.amountIn,
+        recipient: safeAddress,
+      },
     });
     log.info('keeperhub job created', { jobId });
 
@@ -158,4 +223,15 @@ export async function execute({
         // best-effort
       });
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Deterministic synthetic 32-byte hash derived from the intent id. */
+function synthTxHash(intentId: string): string {
+  return keccak256(
+    encodePacked(['string', 'string'], ['mock-tx', intentId]),
+  );
 }

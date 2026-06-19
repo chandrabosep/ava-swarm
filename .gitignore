@@ -30,4 +30,3 @@ dist-ssr
 
 # Local-only scratch
 .local/
-.vercel

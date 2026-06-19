@@ -1,0 +1,5 @@
+{
+  "PrivateKeyPath": "/Users/chandrabose/shiva/open-agents/defi-swarm-newtab/agents/axl-node/./nodes/router/private.pem",
+  "Peers": ["tls://127.0.0.1:9101","tls://127.0.0.1:9102"],
+  "Listen": ["tls://127.0.0.1:9103"]
+}

@@ -6,17 +6,21 @@
 // here so individual agents stay focused on their actual work.
 
 import { db, disconnectDb, type AgentRole } from './db.js';
-import { TOPICS } from './axl.js';
-import { PgMesh } from './mesh.js';
+import { AxlClient, TOPICS } from './axl.js';
+import { env } from './env.js';
 import { createLogger, type Logger } from './log.js';
 import { serviceAddress } from './keys.js';
+import { pgGossip, type PgGossipBus } from './pg-gossip.js';
 
 export interface AgentContext {
   role: AgentRole;
   log: Logger;
-  /** Inter-agent mesh — Postgres LISTEN/NOTIFY-backed pub/sub. */
-  axl: PgMesh;
-  /** Peer id + pubkey for this agent process. */
+  axl: AxlClient;
+  /** Postgres LISTEN/NOTIFY bus — instant cross-process gossip on a
+   *  single host. Sits alongside AXL (multi-host) and DB poll
+   *  (resilience) in the three-layer transport stack. */
+  pg: PgGossipBus;
+  /** Peer id + pubkey from the local AXL daemon. */
   identity: { peerId: string; pubkey: string };
 }
 
@@ -35,16 +39,14 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
     });
   }
 
-  // Mesh — Postgres LISTEN/NOTIFY-backed pub/sub. Non-fatal if pg is
-  // down; agent operates in degraded mode and the subscribe loops will
-  // retry on reconnect.
-  const axl = new PgMesh(role);
-  let identity = { peerId: axl.peerId, pubkey: '0x' };
+  // AXL — non-fatal if down; agent operates in degraded mode.
+  const axl = new AxlClient(env.axlEndpoint(role));
+  let identity = { peerId: 'offline', pubkey: '0x' };
   try {
     identity = await axl.identity();
-    log.info('mesh up', { peerId: identity.peerId });
+    log.info('axl up', { peerId: identity.peerId });
   } catch (err) {
-    log.warn('mesh down — running without inter-agent comms', {
+    log.warn('axl down — running without inter-agent comms', {
       err: err instanceof Error ? err.message : String(err),
     });
   }
@@ -60,13 +62,44 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
     throw err;
   }
 
+  // Sentinel User row that satisfies the AgentState FK for global
+  // (non-tenant-scoped) heartbeat rows. Idempotent.
+  await db().user.upsert({
+    where: { safeAddress: GLOBAL_HEARTBEAT_KEY },
+    update: {},
+    create: {
+      safeAddress: GLOBAL_HEARTBEAT_KEY,
+      ownerEoa: GLOBAL_HEARTBEAT_KEY,
+      chains: '',
+    },
+  });
+
+  // PG gossip bus — opens a dedicated LISTEN connection lazily on first
+  // publish/subscribe. Falls back gracefully if DIRECT_URL is unset or
+  // the connection drops; DB poll always catches missed messages.
+  const pg = pgGossip();
+  pg.onLifecycle = (event, meta) => log.info(event, meta);
+  // Pre-warm the connection so the first publish/subscribe doesn't pay
+  // the connection-establishment latency on the critical path.
+  void pg
+    .publish({ topic: 'swarm.boot.ping', from: role, payload: { ts: Date.now() } })
+    .catch(() => {
+      /* boot ping is best-effort */
+    });
+
   installShutdownHandlers(log);
-  return { role, log, axl, identity };
+  return { role, log, axl, pg, identity };
 }
 
 /**
- * Periodically publish a heartbeat on AXL with the current user count so
- * the dashboard can show "X users served" per agent.
+ * Periodically publish a heartbeat on AXL AND persist it to the DB so the
+ * dashboard's status query can read "X seconds ago" without an AXL
+ * subscription.
+ *
+ * We use the AgentState table (one row per agent globally — null
+ * safeAddress placeholder) for the latest heartbeat, since per-tenant
+ * agent state is already tracked elsewhere. The Event table gets one row
+ * per heartbeat for the activity timeline.
  */
 export function startHeartbeat(
   ctx: AgentContext,
@@ -77,13 +110,37 @@ export function startHeartbeat(
     if (stopped) return;
     try {
       const users = await db().user.count();
-      await ctx.axl.publish({
-        topic: TOPICS.heartbeat,
-        payload: {
-          fromAgent: ctx.role,
-          peerId: ctx.identity.peerId,
-          users,
-          ts: Date.now(),
+      const ts = Date.now();
+      // AXL gossip — fan out to peer agents.
+      await ctx.axl
+        .publish({
+          topic: TOPICS.heartbeat,
+          payload: {
+            fromAgent: ctx.role,
+            peerId: ctx.identity.peerId,
+            users,
+            ts,
+          },
+        })
+        .catch(() => {
+          /* AXL down: heartbeat still lands in DB below */
+        });
+
+      // DB — global row keyed by (agent, GLOBAL_HEARTBEAT_KEY) so the
+      // API can fetch the latest tick per agent in one query without
+      // needing a per-tenant scan.
+      await db().agentState.upsert({
+        where: {
+          agent_safeAddress: {
+            agent: ctx.role,
+            safeAddress: GLOBAL_HEARTBEAT_KEY,
+          },
+        },
+        update: { state: { peerId: ctx.identity.peerId, users, ts } },
+        create: {
+          agent: ctx.role,
+          safeAddress: GLOBAL_HEARTBEAT_KEY,
+          state: { peerId: ctx.identity.peerId, users, ts },
         },
       });
     } catch (err) {
@@ -99,6 +156,13 @@ export function startHeartbeat(
     clearInterval(id);
   };
 }
+
+/**
+ * Sentinel safeAddress used to key the per-agent global heartbeat row.
+ * It's not a real Safe — the User row created on first boot satisfies
+ * the FK; we delete it on shutdown if nothing else references it.
+ */
+export const GLOBAL_HEARTBEAT_KEY = '0x0000000000000000000000000000000000000000';
 
 function installShutdownHandlers(log: Logger): void {
   const shutdown = async (signal: string) => {

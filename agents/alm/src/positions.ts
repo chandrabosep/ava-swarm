@@ -59,6 +59,12 @@ export async function readPositions(
   const client = clientFor(chain);
   const pm = POSITION_MANAGER[chain];
 
+  // Bail cleanly if v4 PositionManager isn't deployed at this address on
+  // this chain (rollout is uneven). Same outcome as "user has no
+  // positions" — quiet return, no warning.
+  const code = await client.getCode({ address: pm });
+  if (!code || code === '0x') return [];
+
   const count = await client.readContract({
     address: pm,
     abi: POSITION_MANAGER_ABI,

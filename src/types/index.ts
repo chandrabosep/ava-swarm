@@ -4,7 +4,7 @@
 
 export type AgentRole = 'pm' | 'alm' | 'router' | 'executor';
 
-export type AgentStatus = 'offline' | 'idle' | 'busy';
+export type AgentStatus = 'offline' | 'idle' | 'busy' | 'online';
 
 export interface Agent {
   id: string;

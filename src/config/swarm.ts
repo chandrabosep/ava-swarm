@@ -29,3 +29,14 @@ export const SWARM_SERVICE_ADDRESSES = {
 } as const;
 
 export type SessionAgentRole = 'alm' | 'executor';
+
+/**
+ * Where the extension reports newly-granted Smart Sessions so the agents'
+ * Postgres has a Session row to look up next tick.
+ *
+ * Override at build time with `VITE_AGENTS_API_URL` (e.g. point to your
+ * deployed agents host). Default is local dev.
+ */
+export const AGENTS_API_URL =
+  (import.meta.env.VITE_AGENTS_API_URL as string | undefined) ??
+  'http://localhost:8787';

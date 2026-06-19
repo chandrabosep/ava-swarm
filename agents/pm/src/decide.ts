@@ -3,7 +3,11 @@
 // Input:  PortfolioSnapshot + per-user risk envelope (defaults for Phase B).
 // Output: AllocationIntent — target weights per symbol, with a tolerance.
 //
-// We use Anthropic's Messages API directly. The system prompt encodes:
+// We use Groq's OpenAI-compatible API (https://console.groq.com) to run
+// open-source models (default: Llama 3.3 70B). Sub-second latency, no
+// rate-limiting issues at hackathon scale.
+//
+// The system prompt encodes:
 //   - the user's risk policy (max drawdown per day, max single position, …)
 //   - the universe of allowed tokens (for Phase B-1 we hardcode)
 //   - the requirement to return strictly JSON in a known schema
@@ -11,10 +15,11 @@
 // We tolerate the occasional non-JSON response by wrapping in a
 // extract-JSON-from-text fallback.
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
+import { profileFor, type RiskProfile } from './profiles.js';
 
 const ALLOWED_TOKENS = ['ETH', 'WBTC', 'USDC', 'UNI'] as const;
 
@@ -25,9 +30,16 @@ export interface DecideParams {
   toleranceBps: number;
   /** Free-form market context (news headlines, signals). Phase B-2 will fill this. */
   context?: string;
+  /** Risk profile from the User row. Drives prompt + caps. */
+  riskProfile?: RiskProfile;
 }
 
-const SYSTEM = `You are a conservative DeFi portfolio manager agent.
+function buildSystemPrompt(profile: RiskProfile): string {
+  const cfg = profileFor(profile).config;
+  const stablePct = Math.round(cfg.stableFloor * 100);
+  const maxPct = Math.round(cfg.maxToken * 100);
+  const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
+  return `${cfg.persona}
 
 Your job is to propose a target allocation across the allowed token
 universe given the user's current portfolio. You output JSON ONLY,
@@ -45,28 +57,36 @@ matching this schema:
 Rules:
 1. Allowed symbols: ${ALLOWED_TOKENS.join(', ')}.
 2. weights sum to exactly 1.0.
-3. No single token weight > 0.6.
-4. Stablecoin floor (USDC) >= 0.20 unless user is explicitly aggressive.
-5. Move at most 0.20 in absolute weight from the current allocation per
-   tick (smooth changes).
-6. Be quantitative in the rationale. Reference current weights and
-   24h moves you observed.`;
+3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
+4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
+5. Move at most ${cfg.maxShiftPerTick.toFixed(2)} (${shiftPct}%) in absolute
+   weight from the current allocation per tick (smooth changes).
+6. Be quantitative in the rationale. Reference current weights and 24h moves.`;
+}
 
 export async function decideAllocation(
   params: DecideParams,
 ): Promise<AllocationIntent> {
-  const client = new Anthropic({ apiKey: env.anthropicApiKey() });
-
-  const userPrompt = buildUserPrompt(params);
-
-  const res = await client.messages.create({
-    model: env.anthropicModel(),
-    max_tokens: 800,
-    system: SYSTEM,
-    messages: [{ role: 'user', content: userPrompt }],
+  const client = new OpenAI({
+    apiKey: env.groqApiKey(),
+    baseURL: env.groqBaseUrl(),
   });
 
-  const text = textFromMessage(res);
+  const userPrompt = buildUserPrompt(params);
+  const system = buildSystemPrompt(params.riskProfile ?? 'balanced');
+
+  const res = await client.chat.completions.create({
+    model: env.groqModel(),
+    max_tokens: 800,
+    temperature: 0.3,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: userPrompt },
+    ],
+  });
+
+  const text = res.choices[0]?.message?.content ?? '';
   const parsed = extractJson(text) as {
     rationale?: string;
     targets?: Array<{ symbol: string; weight: number }>;
@@ -111,13 +131,6 @@ function buildUserPrompt(params: DecideParams): string {
     lines.push('', 'Market context:', context);
   }
   return lines.join('\n');
-}
-
-function textFromMessage(msg: Anthropic.Message): string {
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
 }
 
 /** Find the first {...} JSON object in a string. Tolerates prose around it. */

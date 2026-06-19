@@ -52,6 +52,33 @@ export default {
       boxShadow: {
         surface: '0 1px 0 0 rgba(255,255,255,0.03) inset, 0 1px 2px rgba(0,0,0,0.4)',
       },
+      keyframes: {
+        'row-in': {
+          '0%': {
+            opacity: '0',
+            transform: 'translateY(-6px)',
+            backgroundColor: 'rgba(124, 92, 255, 0.12)',
+          },
+          '60%': {
+            opacity: '1',
+            transform: 'translateY(0)',
+            backgroundColor: 'rgba(124, 92, 255, 0.12)',
+          },
+          '100%': {
+            opacity: '1',
+            transform: 'translateY(0)',
+            backgroundColor: 'transparent',
+          },
+        },
+        'pulse-soft': {
+          '0%,100%': { opacity: '1' },
+          '50%': { opacity: '0.6' },
+        },
+      },
+      animation: {
+        'row-in': 'row-in 1.2s ease-out',
+        'pulse-soft': 'pulse-soft 2s ease-in-out infinite',
+      },
     },
   },
   plugins: [],
