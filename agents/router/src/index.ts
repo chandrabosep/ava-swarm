@@ -232,7 +232,9 @@ async function handleAllocation(
   // USE_TESTNET so faucet-funded KH wallets stop spamming FAILED
   // chips for swaps that were never feasible.
   if (preflightEnabled()) {
-    const pre = await preflightSwaps(swaps);
+    const pre = await preflightSwaps(swaps, (msg, meta) =>
+      ctx.log.info(msg, meta),
+    );
     for (const d of pre.dropped) {
       ctx.log.warn('preflight dropped swap', {
         pair: `${d.swap.tokenInSymbol}->${d.swap.tokenOutSymbol}`,

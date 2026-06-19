@@ -84,6 +84,7 @@ export interface PreflightResult {
  */
 export async function preflightSwaps(
   swaps: PairSwap[],
+  log?: ProbeLogger,
 ): Promise<PreflightResult> {
   const khWallet = process.env.KEEPERHUB_WALLET_ADDRESS;
   if (!khWallet) return { swaps, dropped: [] };
@@ -145,6 +146,7 @@ export async function preflightSwaps(
         amountIn,
         khWallet as `0x${string}`,
         probeCache,
+        log,
       ).then((alive) => ({ swap, alive }));
     }),
   );
@@ -197,6 +199,10 @@ const CHAIN_ID: Record<string, number> = {
  *  Sepolia routing returns success for some pair+dust combos and 404
  *  for the same pair at production sizes. Dust-size probes generated
  *  false positives. */
+interface ProbeLogger {
+  (msg: string, meta?: Record<string, unknown>): void;
+}
+
 async function probeUniswap(
   chain: SupportedChain,
   tokenIn: `0x${string}`,
@@ -204,6 +210,7 @@ async function probeUniswap(
   amountIn: string,
   swapper: `0x${string}`,
   cache: Map<string, boolean>,
+  log?: ProbeLogger,
 ): Promise<boolean> {
   // Cache by (chain, in, out, amount-bucket). Bucket the amount to the
   // nearest power of 10 so $20 and $25 share a probe but $20 and $2000
@@ -217,7 +224,23 @@ async function probeUniswap(
     process.env.UNISWAP_API_BASE ?? 'https://trade-api.gateway.uniswap.org/v1';
   const apiKey = process.env.UNISWAP_API_KEY ?? '';
 
-  let alive = true; // fail open
+  // Mirror the executor's exact request shape — divergence here is what
+  // produces the "probe says alive, executor 404s" mystery.
+  const reqBody = {
+    type: 'EXACT_INPUT',
+    tokenIn,
+    tokenOut,
+    tokenInChainId: CHAIN_ID[chain],
+    tokenOutChainId: CHAIN_ID[chain],
+    amount: amountIn,
+    swapper,
+    slippageTolerance: 5,
+  };
+
+  let alive = true; // fail open by default
+  let probeStatus: number | string = 'unknown';
+  let probeBody = '';
+
   try {
     const res = await fetch(`${baseUrl}/quote`, {
       method: 'POST',
@@ -225,28 +248,35 @@ async function probeUniswap(
         'content-type': 'application/json',
         'x-api-key': apiKey,
       },
-      body: JSON.stringify({
-        type: 'EXACT_INPUT',
-        tokenIn,
-        tokenOut,
-        tokenInChainId: CHAIN_ID[chain],
-        tokenOutChainId: CHAIN_ID[chain],
-        amount: amountIn,
-        swapper,
-        slippageTolerance: 5,
-      }),
+      body: JSON.stringify(reqBody),
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      // Uniswap signals "no liquidity" with 404 + ResourceNotFound. Any
-      // other failure → fail open (transient / auth / rate limit).
-      if (res.status === 404 && text.includes('ResourceNotFound')) {
-        alive = false;
-      }
+    probeStatus = res.status;
+    probeBody = await res.text().catch(() => '');
+    if (res.ok) {
+      alive = true;
+    } else if (res.status === 404 && probeBody.includes('ResourceNotFound')) {
+      alive = false;
+    } else {
+      // 4xx (auth, rate limit) / 5xx — be conservative and treat as
+      // "we're not sure", drop the swap. Better to skip a borderline
+      // pair than emit a routed intent that will FAIL downstream.
+      alive = false;
     }
-  } catch {
-    // Network error — fail open. Don't block routing on a flaky probe.
+  } catch (err) {
+    probeStatus = err instanceof Error ? err.message : 'network error';
+    // Network error — keep failing open here so a flaky outbound link
+    // doesn't block all routing. Logged below for visibility.
+    alive = true;
   }
+
+  log?.(`uniswap probe ${alive ? 'alive' : 'DEAD'}`, {
+    pair: `${tokenIn.slice(0, 10)}->${tokenOut.slice(0, 10)}`,
+    chain,
+    amountIn,
+    status: probeStatus,
+    snippet: probeBody.slice(0, 160),
+    apiKeyPresent: apiKey.length > 0,
+  });
 
   cache.set(key, alive);
   return alive;
