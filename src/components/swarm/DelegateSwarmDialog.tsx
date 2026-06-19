@@ -41,11 +41,13 @@ export function DelegateSwarmDialog({ onClose }: Props) {
       <Surface className="w-full max-w-lg p-6 space-y-5">
         <header className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Delegate Swarm</h2>
+            <h2 className="text-base font-semibold">Register Swarm Intent</h2>
             <p className="mt-1 text-xs text-fg-muted">
-              One EIP-712 signature delegates scoped authority to the four
-              agents. Funds never leave your EOA — your address gains smart
-              account behavior via EIP-7702, no migration needed.
+              One EIP-712 signature records this delegation off-chain so the
+              swarm starts ticking against your EOA. On-chain authority
+              (EIP-7702 / Smart Sessions) is granted in a separate Safe
+              transaction — until then the agents act only within the policy
+              you've already installed on your account.
             </p>
           </div>
           <Badge tone="accent">7702</Badge>

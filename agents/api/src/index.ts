@@ -26,6 +26,7 @@ import {
   selfRegister,
   startHeartbeatLoop,
 } from './skills.js';
+import { requireWalletAuth, WALLET_AUTH_REQUIRED } from './auth.js';
 
 const log = createLogger('api');
 
@@ -35,21 +36,50 @@ const ALLOWED_ORIGINS = (process.env.API_ALLOWED_ORIGINS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Allowlist of extension IDs — only chrome-extension://<ID> origins in
+// this set may call the API. When unset, we still let extensions through
+// (legacy dev mode) but warn loudly at boot. In production, set this to
+// the published extension's ID to refuse rogue extensions on the same
+// browser profile from poking the agents API.
+const EXTENSION_IDS = new Set(
+  (process.env.EXTENSION_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+const EXTENSION_PIN_ENABLED = EXTENSION_IDS.size > 0;
+
+function isAllowedExtensionOrigin(origin: string): boolean {
+  // origin shape: chrome-extension://<id> or moz-extension://<id>
+  const m = origin.match(/^(?:chrome|moz)-extension:\/\/([a-zA-Z0-9_-]+)\/?$/);
+  if (!m) return false;
+  if (!EXTENSION_PIN_ENABLED) return true; // legacy dev — accept any
+  return EXTENSION_IDS.has(m[1]);
+}
+
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Extensions send chrome-extension://<id>; same-origin server fetches
-      // (e.g. from a future web dashboard) need an explicit allowlist via
-      // API_ALLOWED_ORIGINS. No origin header → allow (Node test scripts).
+      // No origin (curl, Node test scripts) → allow.
       if (!origin) return cb(null, true);
-      if (origin.startsWith('chrome-extension://')) return cb(null, true);
-      if (origin.startsWith('moz-extension://')) return cb(null, true);
+      if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) {
+        if (isAllowedExtensionOrigin(origin)) return cb(null, true);
+        return cb(new Error(`Extension origin not in EXTENSION_IDS allowlist: ${origin}`));
+      }
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
       if (ALLOWED_ORIGINS.includes('*')) return cb(null, true);
       cb(new Error(`Origin not allowed: ${origin}`));
     },
+    allowedHeaders: [
+      'Content-Type',
+      'Accept',
+      'x-wallet-address',
+      'x-wallet-ts',
+      'x-wallet-sig',
+      'x-internal-key',
+    ],
   }),
 );
 
@@ -75,7 +105,16 @@ interface SessionPostBody {
 
 const VALID_AGENTS: AgentRole[] = ['pm', 'alm', 'router', 'executor'];
 
-app.post('/api/sessions', async (req, res) => {
+app.post(
+  '/api/sessions',
+  requireWalletAuth((req) => {
+    const b = (req.body ?? {}) as Partial<SessionPostBody>;
+    // The auth header proves ownership of `ownerEoa`; in 7702 mode
+    // ownerEoa === walletAddress, but we authenticate against ownerEoa
+    // (the actual signer) regardless.
+    return b.ownerEoa;
+  }),
+  async (req, res) => {
   try {
     const body = req.body as Partial<SessionPostBody>;
     // Accept both new (walletAddress) and legacy (safeAddress) for
@@ -102,6 +141,20 @@ app.post('/api/sessions', async (req, res) => {
     const walletAddress = incomingWallet.toLowerCase();
     const ownerEoa = body.ownerEoa.toLowerCase();
     const sessionAddress = body.sessionAddress.toLowerCase();
+    // Edge-validate every address shape so junk input fails 400 here
+    // instead of 500ing inside Prisma.
+    if (
+      !/^0x[a-f0-9]{40}$/.test(walletAddress) ||
+      !/^0x[a-f0-9]{40}$/.test(ownerEoa) ||
+      !/^0x[a-f0-9]{40}$/.test(sessionAddress)
+    ) {
+      return res.status(400).json({
+        error: 'walletAddress, ownerEoa, sessionAddress must be 0x EOA addresses',
+      });
+    }
+    if (!/^0x[a-f0-9]+$/.test(body.policyHash.toLowerCase())) {
+      return res.status(400).json({ error: 'policyHash must be 0x hex' });
+    }
     const validUntil = new Date(body.validUntil * 1000);
 
     // Upsert the user (single row per wallet — chains can grow over time).
@@ -164,13 +217,22 @@ app.post('/api/sessions', async (req, res) => {
     });
     return res.status(500).json({ error: 'internal error' });
   }
-});
+  },
+);
 
 const VALID_PROFILES = ['conservative', 'balanced', 'aggressive', 'degen'];
 
-app.put('/api/users/:walletAddress/profile', async (req, res) => {
+const ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+
+app.put(
+  '/api/users/:walletAddress/profile',
+  requireWalletAuth((req) => req.params.walletAddress),
+  async (req, res) => {
   try {
     const walletAddress = req.params.walletAddress.toLowerCase();
+    if (!ADDR_RE.test(walletAddress)) {
+      return res.status(400).json({ error: 'walletAddress must be a 0x EOA address' });
+    }
     const { riskProfile, resetCustom } = req.body as {
       riskProfile?: string;
       resetCustom?: boolean;
@@ -199,7 +261,8 @@ app.put('/api/users/:walletAddress/profile', async (req, res) => {
     });
     return res.status(500).json({ error: 'internal error' });
   }
-});
+  },
+);
 
 const KNOB_BOUNDS: Record<
   string,
@@ -212,9 +275,15 @@ const KNOB_BOUNDS: Record<
   cadenceMinutes: { min: 1, max: 1440, type: 'min' },
 };
 
-app.put('/api/users/:walletAddress/config', async (req, res) => {
+app.put(
+  '/api/users/:walletAddress/config',
+  requireWalletAuth((req) => req.params.walletAddress),
+  async (req, res) => {
   try {
     const walletAddress = req.params.walletAddress.toLowerCase();
+    if (!ADDR_RE.test(walletAddress)) {
+      return res.status(400).json({ error: 'walletAddress must be a 0x EOA address' });
+    }
     const body = (req.body ?? {}) as Record<string, unknown>;
 
     // Merge incoming knobs into the existing customConfig, validating
@@ -250,7 +319,8 @@ app.put('/api/users/:walletAddress/config', async (req, res) => {
     });
     return res.status(500).json({ error: 'internal error' });
   }
-});
+  },
+);
 
 app.get('/api/sessions/:walletAddress', async (req, res) => {
   try {
@@ -490,6 +560,35 @@ function toWire(row: SkillRow) {
 
 const VALID_ROLES: AgentRole[] = ['pm', 'alm', 'router', 'executor'];
 
+/**
+ * Reject IPs that point to the agent host's own network — cloud
+ * metadata, internal services, RFC1918, loopback, link-local, ULA.
+ * Stops a malicious sourceUrl from pivoting the agent into an SSRF
+ * probe of the surrounding infra.
+ */
+function isPrivateIp(ip: string): boolean {
+  // IPv4
+  const v4 = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a >= 224) return true; // multicast / reserved
+    return false;
+  }
+  // IPv6 — coarse buckets covering loopback, link-local, ULA, IPv4-mapped private.
+  const v6 = ip.toLowerCase();
+  if (v6 === '::1' || v6 === '::') return true;
+  if (v6.startsWith('fe80:')) return true; // link-local
+  if (v6.startsWith('fc') || v6.startsWith('fd')) return true; // ULA
+  if (v6.startsWith('::ffff:')) return isPrivateIp(v6.slice(7)); // mapped IPv4
+  return false;
+}
+
 async function fetchSkillContent(sourceUrl: string): Promise<string> {
   let parsed: URL;
   try {
@@ -497,8 +596,29 @@ async function fetchSkillContent(sourceUrl: string): Promise<string> {
   } catch {
     throw new Error(`sourceUrl not a valid URL: ${sourceUrl}`);
   }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error(`sourceUrl protocol must be https: got ${parsed.protocol}`);
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`sourceUrl must be https: got ${parsed.protocol}`);
+  }
+  // SSRF guard: resolve hostname and reject if any answer is a private,
+  // loopback, link-local, or cloud-metadata address. Done after URL parse
+  // so a literal `http://169.254.169.254/...` URL is also blocked.
+  const { lookup } = await import('node:dns/promises');
+  let addrs;
+  try {
+    addrs = await lookup(parsed.hostname, { all: true });
+  } catch (err) {
+    throw new Error(
+      `sourceUrl host ${parsed.hostname} did not resolve: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  for (const a of addrs) {
+    if (isPrivateIp(a.address)) {
+      throw new Error(
+        `sourceUrl host ${parsed.hostname} resolves to private/loopback address ${a.address}`,
+      );
+    }
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_SKILL_TIMEOUT_MS);
@@ -506,7 +626,13 @@ async function fetchSkillContent(sourceUrl: string): Promise<string> {
     const res = await fetch(sourceUrl, {
       headers: { Accept: 'text/markdown, text/plain, */*' },
       signal: controller.signal,
+      // Don't follow redirects across hosts — a malicious upstream could
+      // 302 us to an internal address that would bypass the lookup check.
+      redirect: 'manual',
     });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(`fetch ${sourceUrl} → ${res.status} (redirects disallowed)`);
+    }
     if (!res.ok) {
       throw new Error(`fetch ${sourceUrl} → ${res.status} ${res.statusText}`);
     }
@@ -743,8 +869,9 @@ app.post('/api/skills/:id/refresh-status', async (req, res) => {
 //
 // Auth: shared secret in `x-internal-key` header. Set SWARM_INTERNAL_KEY
 // in agents/.env and reference the same value in the KH workflow JSON.
-// Falls open when the env var is unset (dev mode) so contributors can
-// poke endpoints without ceremony.
+// When the env var is unset, internal endpoints REJECT every call —
+// previously these fell open, which let any caller flood the tick queue
+// or pull the daily treasury report.
 
 const INTERNAL_KEY = process.env.SWARM_INTERNAL_KEY ?? '';
 
@@ -752,7 +879,13 @@ function requireInternal(
   req: express.Request,
   res: express.Response,
 ): boolean {
-  if (!INTERNAL_KEY) return true; // dev mode, fail open
+  if (!INTERNAL_KEY) {
+    res.status(503).json({
+      error:
+        'internal endpoint disabled: set SWARM_INTERNAL_KEY in agents/.env to enable',
+    });
+    return false;
+  }
   if (req.header('x-internal-key') === INTERNAL_KEY) return true;
   res.status(401).json({ error: 'unauthorized' });
   return false;
@@ -894,7 +1027,25 @@ app.post('/internal/report/daily', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  log.info('api up', { port: PORT, allowedOrigins: ALLOWED_ORIGINS });
+  log.info('api up', {
+    port: PORT,
+    allowedOrigins: ALLOWED_ORIGINS,
+    extensionPin: EXTENSION_PIN_ENABLED ? [...EXTENSION_IDS] : 'OFF (dev mode)',
+    walletAuth: WALLET_AUTH_REQUIRED ? 'REQUIRED' : 'optional (dev mode)',
+    internalKey: INTERNAL_KEY ? 'set' : 'UNSET (internal endpoints disabled)',
+  });
+  if (!EXTENSION_PIN_ENABLED) {
+    log.warn(
+      'EXTENSION_IDS unset — every chrome-extension:// origin can call this API. ' +
+        'Set EXTENSION_IDS=<your-extension-id> in production.',
+    );
+  }
+  if (!WALLET_AUTH_REQUIRED) {
+    log.warn(
+      'WALLET_AUTH_REQUIRED is not "true" — wallet-mutation endpoints accept ' +
+        'unsigned requests. Set WALLET_AUTH_REQUIRED=true in production.',
+    );
+  }
   // Skill heartbeat — polls each installed skill's status endpoint
   // every minute to flip claim_status from `pending_claim` → `claimed`
   // once the human completes verification on the upstream's site.

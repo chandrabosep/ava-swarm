@@ -105,6 +105,17 @@ function clientFor(chain: ChainName) {
   });
 }
 
+/**
+ * Public-RPC viem client for the given executor chain. Used by
+ * post-execution receipt verification — KeeperHub returning
+ * `status=mined` with a hash isn't sufficient; we have to confirm the
+ * transaction actually succeeded on-chain (status === 'success') before
+ * marking the intent executed.
+ */
+export function publicClientForChain(chain: ChainName) {
+  return clientFor(chain);
+}
+
 let cachedKhWallet: Address | null = null;
 
 /**

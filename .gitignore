@@ -34,3 +34,6 @@ dist-ssr
 # CLI link state (Vercel, Railway)
 .vercel
 .railway
+
+# GitNexus index
+.gitnexus

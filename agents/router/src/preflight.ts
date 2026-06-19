@@ -78,16 +78,23 @@ export interface PreflightResult {
 /**
  * Filter and resize swaps based on what the KH wallet can actually do.
  *
- * Returns the original list if `KEEPERHUB_WALLET_ADDRESS` is unset
- * (e.g. an env-misconfigured run) — fail open rather than blocking the
- * whole pipeline on missing config.
+ * Hard-fails when `KEEPERHUB_WALLET_ADDRESS` is unset — previously this
+ * fell open, which lets oversized or unfunded swaps through to KH where
+ * they fail with opaque errors and (worst case) drain ETH on retries.
+ * If you genuinely don't want preflight, set `ROUTER_PREFLIGHT=false`
+ * instead — that's an explicit opt-out, not a silent misconfig.
  */
 export async function preflightSwaps(
   swaps: PairSwap[],
   log?: ProbeLogger,
 ): Promise<PreflightResult> {
   const khWallet = process.env.KEEPERHUB_WALLET_ADDRESS;
-  if (!khWallet) return { swaps, dropped: [] };
+  if (!khWallet) {
+    throw new Error(
+      'preflightSwaps: KEEPERHUB_WALLET_ADDRESS is not set. Either set it ' +
+        'in agents/.env or disable preflight with ROUTER_PREFLIGHT=false.',
+    );
+  }
 
   const balances = await khBalances(khWallet);
 

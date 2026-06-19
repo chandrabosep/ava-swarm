@@ -50,6 +50,15 @@ export interface SkillFrontmatter {
   homepage: string | null;
   /** Inline JSON `metadata: {…}` block when present (moltbook style). */
   metadata: Record<string, unknown> | null;
+  /**
+   * Optional explicit allowlist `allowed_hosts: [host1, host2]` (JSON
+   * array form) in YAML frontmatter. When set, this is the AUTHORITATIVE
+   * host allowlist for the skill — body-grep is ignored. Lets a skill
+   * author opt out of the loose "any host mentioned in markdown is
+   * trusted" default, which is exploitable when prose includes a passing
+   * mention of an attacker-chosen domain.
+   */
+  allowedHosts: string[] | null;
 }
 
 export interface DiscoveredSkill {
@@ -76,6 +85,7 @@ export function parseFrontmatter(content: string): SkillFrontmatter {
     description: null,
     homepage: null,
     metadata: null,
+    allowedHosts: null,
   };
   const m = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return empty;
@@ -99,6 +109,21 @@ export function parseFrontmatter(content: string): SkillFrontmatter {
         out.metadata = JSON.parse(meta[1]) as Record<string, unknown>;
       } catch {
         // Non-JSON metadata block — ignore. Skill still installs.
+      }
+      continue;
+    }
+    // allowed_hosts: ["a.com", "b.com"] — JSON array form only.
+    const hosts = line.match(/^allowed_hosts\s*:\s*(\[.+\])\s*$/);
+    if (hosts) {
+      try {
+        const arr = JSON.parse(hosts[1]) as unknown;
+        if (Array.isArray(arr)) {
+          out.allowedHosts = arr
+            .filter((v): v is string => typeof v === 'string' && v.length > 0)
+            .map((v) => v.toLowerCase());
+        }
+      } catch {
+        // Malformed list — fall back to body-grep allowlist.
       }
     }
   }
@@ -157,7 +182,16 @@ function findApiBaseFromMetadata(
 
 export function discover(content: string): DiscoveredSkill {
   const frontmatter = parseFrontmatter(content);
-  const allowedHosts = extractHosts(content);
+  // Prefer explicit allowed_hosts: [...] frontmatter — tight, author-
+  // controlled. Body-grep fallback is the legacy default but is
+  // exploitable: a SKILL.md that mentions an attacker host *anywhere*
+  // (in prose, in a comment, in a code block) silently expands the
+  // outbound HTTP allowlist for the LLM tool loop and the Bearer-key
+  // forwarding paths.
+  const allowedHosts =
+    frontmatter.allowedHosts && frontmatter.allowedHosts.length > 0
+      ? frontmatter.allowedHosts
+      : extractHosts(content);
   const apiBase = findApiBaseFromMetadata(frontmatter.metadata);
   const registerEndpoint = findUrlByVerbAndSuffix(content, 'POST', [
     '/agents/register',

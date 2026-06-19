@@ -23,7 +23,35 @@ import {
 
 import { quote } from './uniswap.js';
 import { submitJob, waitForJob } from './keeperhub.js';
+import { publicClientForChain, type ChainName } from './onchain.js';
 import { loadExecutorSession } from './sessions.js';
+
+/**
+ * Defence against KH returning a structurally-valid txHash that points
+ * at a reverted transaction or an unrelated tx (sequencer race, fake
+ * upstream, replayed hash). After KH says "mined" we re-fetch the
+ * receipt from the chain's RPC and assert success — only then mark
+ * the intent executed.
+ *
+ * Returns the receipt's blockNumber on success; throws otherwise.
+ */
+async function assertReceiptSuccess(
+  chain: string,
+  txHash: `0x${string}`,
+): Promise<bigint> {
+  const client = publicClientForChain(chain as ChainName);
+  const receipt = await client.waitForTransactionReceipt({
+    hash: txHash,
+    timeout: 60_000,
+    retryCount: 3,
+  });
+  if (receipt.status !== 'success') {
+    throw new Error(
+      `tx ${txHash} on ${chain} reverted (status=${receipt.status}, block=${receipt.blockNumber})`,
+    );
+  }
+  return receipt.blockNumber;
+}
 
 // Mock-execution gate. Default false — we want REAL execution on
 // every chain, including testnets. Set EXECUTOR_MOCK=true only when
@@ -194,6 +222,16 @@ export async function execute({
       );
     }
 
+    // Independent on-chain confirmation — KH telling us "mined" with a
+    // valid-looking hash isn't enough; we have to confirm the tx
+    // succeeded and isn't a stale or unrelated hash.
+    const txHash = final.txHash as `0x${string}`;
+    const blockNumber = await assertReceiptSuccess(intent.chain, txHash);
+    log.info('on-chain receipt confirmed', {
+      txHash,
+      blockNumber: Number(blockNumber),
+    });
+
     await db().intent.update({
       where: { id: intentId },
       data: { status: 'executed' },
@@ -202,9 +240,9 @@ export async function execute({
     const receipt: ExecutionReceipt = {
       kind: 'receipt',
       intentId,
-      txHash: final.txHash,
+      txHash,
       status: 'mined',
-      blockNumber: final.blockNumber,
+      blockNumber: Number(blockNumber),
     };
     await db().event.create({
       data: {
@@ -225,7 +263,13 @@ export async function execute({
     log.info('executed', { txHash: final.txHash });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Internal log keeps the full message for debugging.
     log.error('execute failed', { message });
+    // User-facing surfaces (AXL receipt, dashboard event) get a
+    // scrubbed version: token addresses and our KNOWN_TOKENS hint
+    // shouldn't leak into the activity feed where they help an
+    // attacker probe the executor's whitelist shape.
+    const userMessage = scrubExecutionError(message);
     await db().intent.update({
       where: { id: intentId },
       data: { status: 'failed' },
@@ -235,14 +279,14 @@ export async function execute({
         walletAddress,
         agent: 'executor',
         kind: 'intent.failed',
-        payload: { intentId, message },
+        payload: { intentId, message: userMessage },
       },
     });
     const receipt: ExecutionReceipt = {
       kind: 'receipt',
       intentId,
       status: 'failed',
-      error: message,
+      error: userMessage,
     };
     await ctx.axl
       .publish({
@@ -259,6 +303,39 @@ export async function execute({
     // txHash — which is misleading and worse than just showing failure.
     throw err;
   }
+}
+
+/**
+ * Reduce an internal error string to a user-safe surface. Strips:
+ *   - 0x… addresses (token allowlist probe surface)
+ *   - File paths and module names
+ *   - References to KNOWN_TOKENS / cleanup scripts (developer hints)
+ *   - KH/Uniswap internal endpoint shape leaks
+ *
+ * The full message stays in the agent log; the dashboard sees a
+ * generic outcome only.
+ */
+function scrubExecutionError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes('insufficient') && lower.includes('balance')) {
+    return 'swap failed — wallet does not hold enough of the input token';
+  }
+  if (lower.includes('not a known address') || lower.includes('stale intent')) {
+    return 'swap failed — token not supported on this chain';
+  }
+  if (lower.includes('no active executor session') || lower.includes('session')) {
+    return 'swap failed — no active session for this wallet';
+  }
+  if (lower.includes('reverted') || lower.includes('status=reverted')) {
+    return 'swap failed — transaction reverted on-chain';
+  }
+  if (lower.includes('keeperhub') || lower.includes('kh ')) {
+    return 'swap failed — execution provider error';
+  }
+  if (lower.includes('uniswap') || lower.includes('quote')) {
+    return 'swap failed — no liquidity for this pair';
+  }
+  return 'swap failed';
 }
 
 function sleep(ms: number): Promise<void> {

@@ -7,7 +7,18 @@
 // user just activated.
 
 import { AGENTS_API_URL } from '@/config/swarm';
+import { getAuthHeaders } from '@/lib/agents-auth';
 import type { SessionAgent } from '@/types/swarm';
+
+/** Compose JSON + auth headers for write requests. The wallet popup
+ *  fires only on the first call after a signer registers and after the
+ *  4-minute cache expires. */
+async function authedJsonHeaders(): Promise<Record<string, string>> {
+  return {
+    'Content-Type': 'application/json',
+    ...(await getAuthHeaders()),
+  };
+}
 
 export interface RegisterSessionInput {
   walletAddress: string;
@@ -25,7 +36,7 @@ export interface RegisterSessionInput {
 export async function registerSession(input: RegisterSessionInput): Promise<void> {
   const res = await fetch(`${AGENTS_API_URL}/api/sessions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authedJsonHeaders(),
     body: JSON.stringify(input),
   });
   if (!res.ok) {
@@ -43,7 +54,7 @@ export async function setRiskProfile(
     `${AGENTS_API_URL}/api/users/${walletAddress.toLowerCase()}/profile`,
     {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await authedJsonHeaders(),
       body: JSON.stringify({ riskProfile, resetCustom: options?.resetCustom }),
     },
   );
@@ -67,7 +78,7 @@ export async function setCustomConfig(
     `${AGENTS_API_URL}/api/users/${walletAddress.toLowerCase()}/config`,
     {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await authedJsonHeaders(),
       body: JSON.stringify(patch),
     },
   );
