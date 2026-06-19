@@ -15,19 +15,21 @@
 //   executing — Executor picked it up
 //   executed — onchain receipt landed (or failed terminally)
 
+import type { IntentStatus } from '@prisma/client';
+
 import { db, type AgentRole } from './db.js';
 
 export interface PollOptions<T> {
   /** Which agent wrote the upstream intent. */
   fromAgent: AgentRole;
   /** Status the upstream row is in when Router/Executor hasn't seen it. */
-  pendingStatus: string;
+  pendingStatus: IntentStatus;
   /** Status to flip the row to once we begin processing (claim it). */
-  inFlightStatus: string;
+  inFlightStatus: IntentStatus;
   /** Status to set after the handler resolves (success). */
-  completedStatus?: string;
+  completedStatus?: IntentStatus;
   /** Status to set if the handler throws. */
-  failedStatus?: string;
+  failedStatus?: IntentStatus;
   /** Poll interval ms. */
   intervalMs?: number;
   /** Skip rows that were created less than this many ms ago. Gives
@@ -42,7 +44,11 @@ export interface PollOptions<T> {
     payload: T;
   }) => Promise<void>;
   /** Logger. */
-  log: (level: 'info' | 'warn' | 'error', msg: string, meta?: object) => void;
+  log: (
+    level: 'info' | 'warn' | 'error',
+    msg: string,
+    meta?: Record<string, unknown>,
+  ) => void;
 }
 
 export function startIntentPoll<T>(opts: PollOptions<T>): () => void {

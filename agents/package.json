@@ -12,8 +12,7 @@
     "executor"
   ],
   "scripts": {
-    "build": "echo 'skip build — agents run via tsx at runtime'",
-    "build:check": "tsc -b shared api pm alm router executor",
+    "build": "tsc -b shared api pm alm router executor",
     "typecheck": "tsc -b shared api pm alm router executor --noEmit",
     "postinstall": "npm --workspace shared run prisma:generate",
     "prisma:generate": "npm --workspace shared run prisma:generate",

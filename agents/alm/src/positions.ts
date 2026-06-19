@@ -14,7 +14,6 @@ import {
   parseAbi,
   type Address,
   type Hex,
-  type PublicClient,
 } from 'viem';
 import { mainnet, base, unichain } from 'viem/chains';
 
@@ -45,7 +44,9 @@ export interface RawPosition {
   liquidity: bigint;
 }
 
-export function clientFor(chain: SupportedChain): PublicClient {
+// Return type intentionally inferred — see shared/src/chain.ts for the
+// PublicClient TS2719 explainer.
+export function clientFor(chain: SupportedChain) {
   return createPublicClient({
     chain: VIEM_CHAIN[chain],
     transport: http(env.rpc(chain)),

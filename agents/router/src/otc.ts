@@ -136,8 +136,7 @@ export async function consumeAdverts(ctx: AgentContext): Promise<void> {
     await ctx.axl
       .send({
         to: msg.from,
-        kind: TOPICS.otcConfirm,
-        payload: reply,
+        data: JSON.stringify({ kind: TOPICS.otcConfirm, payload: reply }),
       })
       .catch((err) =>
         ctx.log.warn('otc confirm send failed', {

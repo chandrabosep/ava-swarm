@@ -73,7 +73,7 @@ export async function execute({
       intentId,
       txHash: txHash as Hex,
       status: 'mined',
-      blockNumber: 0n,
+      blockNumber: 0,
     };
     await ctx.axl
       .publish({
