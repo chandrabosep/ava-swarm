@@ -46,10 +46,27 @@ export const env = {
     optional('UNISWAP_API_BASE', 'https://trade-api.gateway.uniswap.org/v1')!,
   pimlicoApiKey: () => optional('PIMLICO_API_KEY'),
 
-  // PM / LLM (Groq — OpenAI-compatible, hosted open-source models)
+  // PM / LLM provider switch — `groq` (default) or `hermes` (Nous Portal /
+  // any OpenAI-compatible Hermes endpoint).
+  llmProvider: (): 'groq' | 'hermes' => {
+    const v = (optional('LLM_PROVIDER', 'groq') ?? 'groq').toLowerCase();
+    if (v !== 'groq' && v !== 'hermes') {
+      throw new Error(`[env] LLM_PROVIDER must be 'groq' or 'hermes', got '${v}'`);
+    }
+    return v;
+  },
+
+  // Groq — OpenAI-compatible, hosted open-source models.
   groqApiKey: () => required('GROQ_API_KEY'),
   groqModel: () => optional('GROQ_MODEL', 'llama-3.3-70b-versatile')!,
   groqBaseUrl: () => optional('GROQ_BASE_URL', 'https://api.groq.com/openai/v1')!,
+
+  // Hermes — Nous Portal by default, but any OpenAI-compatible endpoint
+  // works (self-hosted hermes-agent server, vLLM, etc.).
+  hermesApiKey: () => required('HERMES_API_KEY'),
+  hermesModel: () => optional('HERMES_MODEL', 'Hermes-4-405B')!,
+  hermesBaseUrl: () =>
+    optional('HERMES_BASE_URL', 'https://inference-api.nousresearch.com/v1')!,
 
   // Zerion
   zerionProxyUrl: () => required('ZERION_PROXY_URL'),

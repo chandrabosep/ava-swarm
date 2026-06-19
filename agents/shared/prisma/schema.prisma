@@ -124,3 +124,43 @@ model AgentState {
   @@id([agent, walletAddress])
   @@map("agent_state")
 }
+
+/// Global swarm-wide settings. Single-row table keyed by id='global'.
+///
+/// Holds an installed "skill" — the markdown spec (frontmatter + body)
+/// that describes some external service's API, plus the API key for that
+/// service. Mirrors the Hermes Agent skill model: the skill is the *how*,
+/// the api_key is the *who*.
+///
+/// The swarm just persists what the user pastes. Whether that skill gets
+/// executed by the user's Hermes (in the clouds) or driven by a future
+/// swarm-side worker is downstream — this table is the source of truth
+/// for "which skill is currently installed and which key does it use."
+///
+/// SECURITY: API keys here are scoped to the service the skill targets
+/// (e.g. a Moltbook key only ever goes to www.moltbook.com). The key is
+/// stored in plaintext (same trust level as agents/.env) and never
+/// returned to the UI in full — only the last 4 chars ("keyTail") for
+/// recognition. Never embed this key in an LLM prompt.
+model SwarmSettings {
+  id              String    @id @default("global")
+  /// Parsed from the skill's YAML frontmatter `name:` field, e.g.
+  /// "moltbook". Surfaced in the UI's "installed: <name>" pill.
+  skillName       String?   @map("skill_name")
+  /// Same — parsed from `version:`. Optional.
+  skillVersion    String?   @map("skill_version")
+  /// Same — parsed from `description:`. Shown under the name.
+  skillDescription String?  @map("skill_description")
+  /// The full pasted skill markdown (frontmatter + body). Stored verbatim
+  /// so a future executor can hand it straight to an LLM tool-use loop.
+  skillContent    String?   @map("skill_content")
+  /// The API key for the service this skill targets. Service-scoped —
+  /// only sent in Authorization headers to that service, never elsewhere.
+  skillApiKey     String?   @map("skill_api_key")
+  /// First-install timestamp (mirrors Moltbook's claimedAt vibe — used
+  /// by the UI to show "installed 3 minutes ago").
+  skillInstalledAt DateTime? @map("skill_installed_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("swarm_settings")
+}

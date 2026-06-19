@@ -29,7 +29,7 @@ const ALLOWED_ORIGINS = (process.env.API_ALLOWED_ORIGINS ?? '')
   .filter(Boolean);
 
 const app = express();
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '256kb' }));
 app.use(
   cors({
     origin: (origin, cb) => {
@@ -396,6 +396,381 @@ app.get('/api/status/:walletAddress', async (req, res) => {
     return res.status(500).json({ error: 'internal error' });
   }
 });
+
+// =====================================================================
+// Skill connector
+// =====================================================================
+// Skill connector
+// =====================================================================
+//
+// A "skill" is a markdown file (Hermes-Agent style) that describes how
+// to interact with some external service — see e.g. Moltbook's SKILL.md
+// at https://www.moltbook.com/skill.md. The user pastes the skill into
+// the extension, then pastes the API key for whatever service the skill
+// targets. The swarm just persists both. Whether the skill is then
+// driven by the user's Hermes (running elsewhere) or by a future swarm-
+// side worker is downstream — this layer is storage only.
+//
+// Three endpoints:
+//   GET    /api/skill        — current install (skill metadata + keyTail).
+//                              Never echoes the full content+key.
+//   PUT    /api/skill        — patch: { content?, apiKey?, clearKey? }
+//                              On content paste we parse the YAML
+//                              frontmatter and pull out name / version /
+//                              description so the UI can show "installed:
+//                              moltbook v1.12.0" without re-parsing.
+//   DELETE /api/skill        — wipe everything (skill + key).
+
+const keyTail = (k: string | null | undefined): string | null =>
+  k && k.length >= 4 ? k.slice(-4) : null;
+
+interface SkillFrontmatter {
+  name: string | null;
+  version: string | null;
+  description: string | null;
+}
+
+/**
+ * Parse the YAML-ish frontmatter from a Hermes skill file. We don't pull
+ * a YAML lib for this — frontmatter blocks are simple key:value lines and
+ * the only nested thing in the wild (Moltbook's `metadata: {…}` JSON) we
+ * skip. If parsing fails we just return all-nulls; the swarm still stores
+ * the raw content.
+ */
+function parseSkillFrontmatter(content: string): SkillFrontmatter {
+  const empty: SkillFrontmatter = { name: null, version: null, description: null };
+  const m = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return empty;
+  const block = m[1];
+  const out: SkillFrontmatter = { ...empty };
+  for (const line of block.split(/\r?\n/)) {
+    const kv = line.match(/^(name|version|description)\s*:\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const key = kv[1] as keyof SkillFrontmatter;
+    let val = kv[2];
+    // Strip surrounding quotes if present.
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+/**
+ * Pull the set of distinct https hosts referenced in the skill markdown.
+ * The PM uses this list as the allowlist when the model invokes
+ * `call_skill_api` — the API server surfaces it for the UI so users can
+ * see which hosts their skill is actually allowed to talk to. Logic
+ * mirrors agents/pm/src/skill.ts:extractHosts; kept duplicated to keep
+ * `@swarm/shared` free of skill-runtime concerns.
+ */
+function extractSkillHosts(content: string | null | undefined): string[] {
+  if (!content) return [];
+  const out = new Set<string>();
+  const re = /https?:\/\/([a-zA-Z0-9.\-]+)(?::\d+)?(?:\/|\b)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content))) {
+    const host = m[1].toLowerCase();
+    if (host === 'example.com' || host === 'localhost') continue;
+    out.add(host);
+  }
+  return [...out];
+}
+
+/**
+ * Snapshot of the LLM provider currently selected for PM ticks. The skill
+ * connector only drives the PM when provider==='hermes' AND a skill is
+ * installed AND the skill exposes at least one callable host — so the UI
+ * needs all three pieces to render the right status.
+ */
+function llmStatus(): {
+  provider: 'groq' | 'hermes';
+  hermesConfigured: boolean;
+  hermesModel: string | null;
+  hermesBaseUrl: string | null;
+} {
+  const provider = (process.env.LLM_PROVIDER ?? 'groq').toLowerCase() === 'hermes'
+    ? 'hermes'
+    : 'groq';
+  const hermesConfigured = !!process.env.HERMES_API_KEY;
+  return {
+    provider,
+    hermesConfigured,
+    hermesModel: process.env.HERMES_MODEL ?? 'Hermes-4-405B',
+    hermesBaseUrl:
+      process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1',
+  };
+}
+
+/**
+ * Build the wire shape returned by GET/PUT /api/skill. Centralized so the
+ * PUT response and the GET response stay in lock-step (they both feed the
+ * same React Query cache key).
+ */
+function buildSkillState(row: {
+  skillContent: string | null;
+  skillApiKey: string | null;
+  skillName: string | null;
+  skillVersion: string | null;
+  skillDescription: string | null;
+  skillInstalledAt: Date | null;
+  updatedAt: Date;
+} | null) {
+  const allowedHosts = extractSkillHosts(row?.skillContent);
+  const llm = llmStatus();
+  // The PM only injects the skill when Hermes is selected, content is
+  // present, the key is present, and the skill listed at least one host.
+  const pmActive =
+    llm.provider === 'hermes' &&
+    !!row?.skillContent &&
+    !!row?.skillApiKey &&
+    allowedHosts.length > 0;
+  return {
+    hasSkill: !!row?.skillContent,
+    hasKey: !!row?.skillApiKey,
+    keyTail: keyTail(row?.skillApiKey),
+    name: row?.skillName ?? null,
+    version: row?.skillVersion ?? null,
+    description: row?.skillDescription ?? null,
+    // Length only — don't ship the full markdown back on every poll.
+    contentLength: row?.skillContent?.length ?? 0,
+    installedAt: row?.skillInstalledAt ?? null,
+    updatedAt: row?.updatedAt ?? null,
+    allowedHosts,
+    llmProvider: llm.provider,
+    hermesConfigured: llm.hermesConfigured,
+    hermesModel: llm.hermesModel,
+    hermesBaseUrl: llm.hermesBaseUrl,
+    pmActive,
+  };
+}
+
+app.get('/api/skill', async (_req, res) => {
+  try {
+    const row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
+    return res.json(buildSkillState(row));
+  } catch (err) {
+    log.error('get skill failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+interface SkillPutBody {
+  /** Paste the full skill markdown. `null` to clear, omitted to leave alone. */
+  content?: string | null;
+  /** Paste the API key. `null` (or `clearKey:true`) to clear. */
+  apiKey?: string | null;
+  clearKey?: boolean;
+}
+
+app.put('/api/skill', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as SkillPutBody;
+    const existing =
+      (await db().swarmSettings.findUnique({ where: { id: 'global' } })) ?? null;
+
+    // Resolve the new content + frontmatter. `undefined` = leave alone,
+    // `null` = clear, string = overwrite + reparse.
+    let nextContent: string | null;
+    let nextFm: SkillFrontmatter;
+    if (body.content === null) {
+      nextContent = null;
+      nextFm = { name: null, version: null, description: null };
+    } else if (typeof body.content === 'string') {
+      if (body.content.length > 200_000) {
+        return res.status(413).json({ error: 'skill content > 200KB rejected' });
+      }
+      nextContent = body.content;
+      nextFm = parseSkillFrontmatter(body.content);
+    } else {
+      nextContent = existing?.skillContent ?? null;
+      nextFm = {
+        name: existing?.skillName ?? null,
+        version: existing?.skillVersion ?? null,
+        description: existing?.skillDescription ?? null,
+      };
+    }
+
+    const isClearingKey = body.clearKey === true || body.apiKey === null;
+    const nextKey =
+      isClearingKey
+        ? null
+        : typeof body.apiKey === 'string' && body.apiKey.length > 0
+          ? body.apiKey
+          : (existing?.skillApiKey ?? null);
+
+    // First-install timestamp: stamp once when the row goes from "no
+    // skill" to "skill present", and clear when content is cleared.
+    const wasInstalled = !!existing?.skillContent;
+    const willBeInstalled = !!nextContent;
+    const nextInstalledAt = willBeInstalled
+      ? wasInstalled
+        ? (existing?.skillInstalledAt ?? new Date())
+        : new Date()
+      : null;
+
+    const next = {
+      skillContent: nextContent,
+      skillName: nextFm.name,
+      skillVersion: nextFm.version,
+      skillDescription: nextFm.description,
+      skillApiKey: nextKey,
+      skillInstalledAt: nextInstalledAt,
+    };
+
+    const saved = await db().swarmSettings.upsert({
+      where: { id: 'global' },
+      update: next,
+      create: { id: 'global', ...next },
+    });
+
+    log.info('skill updated', {
+      name: saved.skillName,
+      version: saved.skillVersion,
+      hasKey: !!saved.skillApiKey,
+      keyTail: keyTail(saved.skillApiKey),
+      contentLength: saved.skillContent?.length ?? 0,
+      allowedHosts: extractSkillHosts(saved.skillContent),
+    });
+
+    return res.json(buildSkillState(saved));
+  } catch (err) {
+    log.error('update skill failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.delete('/api/skill', async (_req, res) => {
+  try {
+    await db().swarmSettings.update({
+      where: { id: 'global' },
+      data: {
+        skillContent: null,
+        skillName: null,
+        skillVersion: null,
+        skillDescription: null,
+        skillApiKey: null,
+        skillInstalledAt: null,
+      },
+    });
+    return res.json({ hasSkill: false, hasKey: false });
+  } catch (err) {
+    log.error('delete skill failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// =====================================================================
+// Hermes connection test
+// =====================================================================
+//
+// Smoke-tests the configured Hermes endpoint with a one-token chat
+// completion. The UI calls this from the connector card after a user
+// pastes their key/configures env so they get instant "yes, your Hermes
+// is reachable" feedback instead of waiting for the next PM tick to
+// blow up.
+//
+// Why a custom fetch instead of the OpenAI SDK? Keeps agents/api free
+// of an SDK dep just to issue one HTTP POST — the request body is OAI-
+// compatible and tiny. We propagate the upstream status code and the
+// first line of the error so the UI can surface "401: invalid api key"
+// or "404: model not found" without us guessing.
+
+const HERMES_TEST_TIMEOUT_MS = 10_000;
+
+app.post('/api/hermes/test', async (_req, res) => {
+  const apiKey = process.env.HERMES_API_KEY ?? '';
+  const baseUrl =
+    process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1';
+  const model = process.env.HERMES_MODEL ?? 'Hermes-4-405B';
+
+  if (!apiKey) {
+    return res.status(400).json({
+      ok: false,
+      error: 'HERMES_API_KEY not set on the agents server',
+      hint: 'set HERMES_API_KEY in agents/.env and restart the API',
+    });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HERMES_TEST_TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    const upstream = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        max_tokens: 8,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: 'Reply with the single word: ok',
+          },
+        ],
+      }),
+    });
+
+    const latencyMs = Date.now() - started;
+    const text = await upstream.text();
+    let parsed: { choices?: Array<{ message?: { content?: string } }> } | null = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Non-JSON upstream response — pass the first 200 chars through.
+    }
+    if (!upstream.ok) {
+      return res.status(502).json({
+        ok: false,
+        status: upstream.status,
+        latencyMs,
+        model,
+        baseUrl,
+        error: text.slice(0, 200),
+      });
+    }
+    const sample = parsed?.choices?.[0]?.message?.content?.trim() ?? null;
+    return res.json({
+      ok: true,
+      status: upstream.status,
+      latencyMs,
+      model,
+      baseUrl,
+      sample,
+    });
+  } catch (err) {
+    return res.status(502).json({
+      ok: false,
+      latencyMs: Date.now() - started,
+      model,
+      baseUrl,
+      error:
+        err instanceof Error
+          ? err.name === 'AbortError'
+            ? `timed out after ${HERMES_TEST_TIMEOUT_MS}ms`
+            : err.message
+          : String(err),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 
 app.listen(PORT, () => {
   log.info('api up', { port: PORT, allowedOrigins: ALLOWED_ORIGINS });
