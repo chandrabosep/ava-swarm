@@ -14,6 +14,7 @@
   "scripts": {
     "build": "tsc -b shared api pm alm router executor",
     "typecheck": "tsc -b shared api pm alm router executor --noEmit",
+    "postinstall": "npm --workspace shared run prisma:generate",
     "prisma:generate": "npm --workspace shared run prisma:generate",
     "prisma:migrate": "npm --workspace shared run prisma:migrate",
     "dev:api": "npm --workspace api run dev",
@@ -22,7 +23,13 @@
     "dev:router": "npm --workspace router run dev",
     "dev:executor": "npm --workspace executor run dev",
     "dev:all": "concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:dev:api\" \"npm:dev:pm\" \"npm:dev:alm\" \"npm:dev:router\" \"npm:dev:executor\"",
-    "dev:all:logged": "mkdir -p logs && concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:dev:api 2>&1 | tee -a logs/api.log\" \"npm:dev:pm 2>&1 | tee -a logs/pm.log\" \"npm:dev:alm 2>&1 | tee -a logs/alm.log\" \"npm:dev:router 2>&1 | tee -a logs/router.log\" \"npm:dev:executor 2>&1 | tee -a logs/executor.log\""
+    "dev:all:logged": "mkdir -p logs && concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:dev:api 2>&1 | tee -a logs/api.log\" \"npm:dev:pm 2>&1 | tee -a logs/pm.log\" \"npm:dev:alm 2>&1 | tee -a logs/alm.log\" \"npm:dev:router 2>&1 | tee -a logs/router.log\" \"npm:dev:executor 2>&1 | tee -a logs/executor.log\"",
+    "start:api": "tsx api/src/index.ts",
+    "start:pm": "tsx pm/src/index.ts",
+    "start:alm": "tsx alm/src/index.ts",
+    "start:router": "tsx router/src/index.ts",
+    "start:executor": "tsx executor/src/index.ts",
+    "start": "concurrently -n api,pm,alm,router,executor -c cyan,green,blue,magenta,yellow \"npm:start:api\" \"npm:start:pm\" \"npm:start:alm\" \"npm:start:router\" \"npm:start:executor\""
   },
   "devDependencies": {
     "concurrently": "^9.0.0",

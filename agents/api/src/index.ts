@@ -648,6 +648,90 @@ async function fetchSkillContent(sourceUrl: string): Promise<string> {
   }
 }
 
+// Hermes connectivity smoke test. Pings the configured endpoint with a
+// one-token completion to verify HERMES_API_KEY / HERMES_BASE_URL /
+// HERMES_MODEL are reachable and authorized. Surfaces structured JSON
+// for the UI's "Test Hermes" button regardless of success/failure mode.
+const HERMES_TEST_TIMEOUT_MS = 8_000;
+
+app.post('/api/hermes/test', async (_req, res) => {
+  const apiKey = process.env.HERMES_API_KEY ?? '';
+  const baseUrl =
+    process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1';
+  const model = process.env.HERMES_MODEL ?? 'Hermes-4-405B';
+
+  if (!apiKey) {
+    return res.status(400).json({
+      ok: false,
+      error: 'HERMES_API_KEY not set on the agents server',
+      hint: 'set HERMES_API_KEY in agents/.env and restart the API',
+    });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HERMES_TEST_TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    const upstream = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        max_tokens: 8,
+        temperature: 0,
+        messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
+      }),
+    });
+
+    const latencyMs = Date.now() - started;
+    const text = await upstream.text();
+    let parsed: { choices?: Array<{ message?: { content?: string } }> } | null = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Non-JSON upstream — fall through to slice below.
+    }
+    if (!upstream.ok) {
+      return res.status(502).json({
+        ok: false,
+        status: upstream.status,
+        latencyMs,
+        model,
+        baseUrl,
+        error: text.slice(0, 200),
+      });
+    }
+    const sample = parsed?.choices?.[0]?.message?.content?.trim() ?? null;
+    return res.json({
+      ok: true,
+      status: upstream.status,
+      latencyMs,
+      model,
+      baseUrl,
+      sample,
+    });
+  } catch (err) {
+    return res.status(502).json({
+      ok: false,
+      latencyMs: Date.now() - started,
+      model,
+      baseUrl,
+      error:
+        err instanceof Error
+          ? err.name === 'AbortError'
+            ? `timed out after ${HERMES_TEST_TIMEOUT_MS}ms`
+            : err.message
+          : String(err),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 app.get('/api/skills', async (_req, res) => {
   try {
     const rows = (await db().skill.findMany({

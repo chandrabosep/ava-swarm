@@ -211,3 +211,39 @@ export async function refreshSkillStatus(
   }
   return body.skill;
 }
+
+// =====================================================================
+// Hermes connectivity test
+// =====================================================================
+
+export interface HermesTestResult {
+  ok: boolean;
+  status?: number;
+  latencyMs?: number;
+  model?: string | null;
+  baseUrl?: string | null;
+  /** Trimmed content of the model's reply. Only populated on success. */
+  sample?: string | null;
+  /** Upstream error message (truncated server-side) when ok=false. */
+  error?: string;
+  /** Optional human hint for the most common misconfig. */
+  hint?: string;
+}
+
+/**
+ * Pings the configured Hermes endpoint with a one-token completion to
+ * verify HERMES_API_KEY / HERMES_BASE_URL / HERMES_MODEL are reachable
+ * and authorized. Server returns structured JSON for both success (200)
+ * and the expected failure modes (400 missing key, 502 upstream error).
+ */
+export async function testHermes(): Promise<HermesTestResult> {
+  const res = await fetch(`${AGENTS_API_URL}/api/hermes/test`, {
+    method: 'POST',
+  });
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as HermesTestResult;
+  } catch {
+    throw new Error(`testHermes ${res.status}: ${text || res.statusText}`);
+  }
+}

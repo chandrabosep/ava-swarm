@@ -126,9 +126,11 @@ export async function decideAllocation(
   const baseSystem = buildSystemPrompt(params.riskProfile ?? 'balanced');
 
   // Skills are agent-role-scoped (see agents/api/src/skills.ts and the
-  // `skills` table). We expose them to whichever LLM PM is using —
-  // Groq and Hermes both speak OpenAI-compatible tool calls.
-  const skills = await loadSkillsForAgent('pm');
+  // `skills` table). Gated on Hermes provider: Groq's hosted models'
+  // tool-calling is unreliable enough that we'd rather skip the skill
+  // loop than hand the model a tool it might mis-call. The skill-driven
+  // flow is the differentiator we ship for Hermes.
+  const skills = llm.provider === 'hermes' ? await loadSkillsForAgent('pm') : [];
 
   const text =
     skills.length > 0
