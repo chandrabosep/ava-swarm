@@ -57,6 +57,15 @@ async function tickAll(ctx: AgentContext): Promise<void> {
   });
 
   for (const { walletAddress } of sessions) {
+    // Defensive: schema declares this non-null, but a stale prisma
+    // client + the legacy safe_address column mapping have produced
+    // empty strings here in the past. A tick with no wallet would
+    // publish a SwarmMessage missing walletAddress, which the router
+    // can only drop. Skip cleanly.
+    if (!walletAddress) {
+      ctx.log.warn('session row with empty walletAddress skipped');
+      continue;
+    }
     try {
       await tickUser(ctx, walletAddress);
     } catch (err) {

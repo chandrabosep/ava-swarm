@@ -12,6 +12,9 @@
 import type { AllocationIntent, SupportedChain } from '@swarm/shared';
 import { resolve, type Symbol } from './tokens.js';
 
+/** Optional logger so the router can surface unresolvable symbol drops. */
+type DropLogger = (msg: string, meta?: Record<string, unknown>) => void;
+
 export interface PairSwap {
   chain: SupportedChain;
   tokenInSymbol: Symbol;
@@ -42,14 +45,45 @@ export function decompose(
   current: CurrentSlice[],
   /** Where to settle. Phase B-1 always picks the user's primary chain. */
   chain: SupportedChain,
+  /** Optional logger for unresolvable target drops. */
+  warn?: DropLogger,
 ): PairSwap[] {
   const total = current.reduce((s, c) => s + c.valueUsd, 0);
   if (total === 0) return [];
 
   const tolerance = ((allocation.toleranceBps ?? 0) / 10_000) * total;
 
+  // Filter targets to those we have an on-chain address for on this
+  // chain. PM is unbounded — it can propose MATIC, SOL, whatever — but
+  // routing requires a real address. Drop the unrouteable targets here
+  // and renormalize the surviving weights so the rest of the proposal
+  // still flows.
+  const resolvedTargets: Array<{ symbol: string; weight: number }> = [];
+  let droppedWeight = 0;
+  for (const t of allocation.targets) {
+    if (resolve(t.symbol, chain) !== null) {
+      resolvedTargets.push(t);
+    } else {
+      droppedWeight += t.weight;
+      warn?.('decompose dropped unrouteable target', {
+        symbol: t.symbol,
+        chain,
+        weight: t.weight,
+      });
+    }
+  }
+  if (resolvedTargets.length === 0) return [];
+  // Renormalize so surviving weights sum to (1 - 0) = 1.0 again. If
+  // every token was unrouteable we already returned above.
+  const survivingSum = resolvedTargets.reduce((s, t) => s + t.weight, 0);
+  if (survivingSum > 0 && droppedWeight > 0) {
+    for (const t of resolvedTargets) {
+      t.weight = t.weight / survivingSum;
+    }
+  }
+
   // Compute USD delta per symbol — positive = we want to acquire, negative = we want to sell.
-  const targetMap = new Map(allocation.targets.map((t) => [t.symbol, t.weight]));
+  const targetMap = new Map(resolvedTargets.map((t) => [t.symbol, t.weight]));
   const currentMap = new Map(current.map((c) => [c.symbol, c]));
   const symbols = new Set<string>([
     ...targetMap.keys(),
@@ -89,12 +123,30 @@ export function decompose(
     const buy = buys[0];
     const notional = Math.min(sell.usd, buy.usd);
 
+    // resolve() can return null for unknown symbols. Targets were
+    // pre-filtered above, but `current` can contain anything Alchemy
+    // gave us (held tokens we never proposed for). Skip those without
+    // a known address; the user holds them but Router can't swap them.
+    const tokenInAddr = resolve(sell.symbol, chain);
+    const tokenOutAddr = resolve(buy.symbol, chain);
+    if (!tokenInAddr || !tokenOutAddr) {
+      warn?.('decompose dropped unrouteable held position', {
+        sellSymbol: sell.symbol,
+        buySymbol: buy.symbol,
+        chain,
+      });
+      // Pop whichever side is unrouteable so we don't infinite-loop.
+      if (!tokenInAddr) sells.shift();
+      if (!tokenOutAddr) buys.shift();
+      continue;
+    }
+
     swaps.push({
       chain,
       tokenInSymbol: sell.symbol,
       tokenOutSymbol: buy.symbol,
-      tokenIn: resolve(sell.symbol, chain),
-      tokenOut: resolve(buy.symbol, chain),
+      tokenIn: tokenInAddr,
+      tokenOut: tokenOutAddr,
       notionalUsd: notional,
       tokenInPriceUsd: sell.priceUsd,
       tokenInDecimals: sell.decimals,

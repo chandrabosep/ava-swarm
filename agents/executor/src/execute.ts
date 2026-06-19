@@ -25,6 +25,10 @@ import { quote } from './uniswap.js';
 import { submitJob, waitForJob } from './keeperhub.js';
 import { loadExecutorSession } from './sessions.js';
 
+// Mock-execution gate. Default false — we want REAL execution on
+// every chain, including testnets. Set EXECUTOR_MOCK=true only when
+// you explicitly want to short-circuit Uniswap + KeeperHub for a
+// pure-UI demo (e.g. recording a video without funding the KH wallet).
 const MOCK = (process.env.EXECUTOR_MOCK ?? '').toLowerCase() === 'true';
 
 export interface ExecuteParams {
@@ -73,7 +77,7 @@ export async function execute({
       intentId,
       txHash: txHash as Hex,
       status: 'mined',
-      blockNumber: 0n,
+      blockNumber: 0,
     };
     await ctx.axl
       .publish({

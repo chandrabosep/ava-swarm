@@ -74,6 +74,16 @@ export async function broadcastAdvert(
   swap: PairSwap,
   walletAddress: string,
 ): Promise<string> {
+  // Hard precondition: every advert + its event row are scoped to a
+  // user wallet. Bail early instead of letting Prisma crash on a null
+  // FK insert. Returns a fake advert id so callers' `await` doesn't
+  // explode — it'll just never match anything.
+  if (!walletAddress) {
+    ctx.log.warn('advert refused — missing walletAddress', {
+      pair: `${swap.tokenInSymbol}->${swap.tokenOutSymbol}`,
+    });
+    return '';
+  }
   const advert: OtcAdvert = {
     advertId: newId(),
     chain: swap.chain,

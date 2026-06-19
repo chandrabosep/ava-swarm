@@ -35,8 +35,8 @@ export default function NewTab() {
 
           <SmartAccountCard />
           <RiskProfileCard />
-          <SkillConnectorCard />
           <AgentStatusPanel />
+          <SkillConnectorCard />
         </main>
         <RightRail />
       </div>
@@ -95,7 +95,7 @@ function CommandBar() {
 
       <div className="hidden md:flex items-center gap-6 text-[10px] uppercase tracking-hud font-sans text-fg-subtle">
         <StatusPip label="Link" tone="ok" value="online" />
-        <StatusPip label="Net" tone="ok" value="mainnet" />
+        <StatusPip label="Net" tone="ok" value="Testnet" />
         <StatusPip label="Sec" tone="ok" value="EIP-7702" />
       </div>
     </header>

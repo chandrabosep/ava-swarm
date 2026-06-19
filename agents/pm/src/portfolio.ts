@@ -4,14 +4,15 @@
 // Testnet: Alchemy Portfolio API (Zerion doesn't index Sepolia/etc).
 // Toggled by USE_TESTNET in the env.
 //
-// CRITICAL: when KEEPERHUB_WALLET_ADDRESS is set, we read the KH
-// wallet's positions instead of the user's EOA. This is because under
-// the current Model B architecture KH executes swaps from its own
-// keypair — if PM proposes "sell WBTC" based on the user's EOA holding
-// WBTC, but KH's wallet has zero WBTC, the swap can never succeed.
-// Reading from the KH wallet keeps PM's proposals strictly within
-// what's actually swappable. The user funds the KH wallet once; PM
-// rebalances *that* portfolio.
+// Reads positions from the user's EOA by default — under EIP-7702 the
+// EOA *is* the smart account and the agents act on it directly, so the
+// portfolio PM evaluates is the same one the dashboard renders.
+//
+// PM_PORTFOLIO_FROM=kh is still supported for the legacy Model B Smart
+// Sessions path where KH executes swaps from its own keypair (in that
+// world PM had to read the KH wallet because that's what was
+// swappable). Set KEEPERHUB_WALLET_ADDRESS alongside if you take that
+// route — otherwise we silently fall back to the EOA.
 //
 // Returns a compact Snapshot the LLM prompt can fit into a few hundred
 // tokens. 24h change is filled from Zerion when available; on testnet
@@ -25,13 +26,16 @@ import {
 } from '@swarm/shared';
 
 /** Resolve which wallet PM should read positions from. Defaults to the
- *  KH-managed wallet (the one that actually executes swaps). Override
- *  with PM_PORTFOLIO_FROM=eoa to read the user's EOA instead — useful
- *  during the EIP-7702 cutover when KH executes from the user's EOA. */
+ *  user's EOA (matches what the dashboard renders under EIP-7702).
+ *  Override with PM_PORTFOLIO_FROM=kh to read the KH-managed wallet
+ *  instead — only useful for the legacy Smart Sessions path where KH
+ *  executed swaps from its own keypair. */
 function effectiveWallet(userEoa: string): string {
-  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'kh').toLowerCase();
-  if (mode === 'eoa') return userEoa;
-  return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
+  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'eoa').toLowerCase();
+  if (mode === 'kh') {
+    return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
+  }
+  return userEoa;
 }
 
 export interface PositionSlice {

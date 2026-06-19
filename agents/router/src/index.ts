@@ -32,6 +32,7 @@ import {
   lookForMatch,
   settleMatch,
 } from './otc.js';
+import { preflightEnabled, preflightSwaps } from './preflight.js';
 
 /** Phase B-1: settle every intent on the user's primary chain. Override
  *  with PRIMARY_CHAIN env if you need to demo on a different chain.
@@ -76,10 +77,44 @@ async function main() {
   // the row pending→netted in a single SQL statement; losers no-op.
   const claimAndHandle = async (
     transport: 'axl' | 'pg' | 'db-poll',
-    walletAddress: string,
+    walletAddress: string | undefined,
     intentId: string | undefined,
     payload: AllocationIntent,
   ) => {
+    // If the gossip envelope is missing walletAddress (older message
+    // shape, transport quirk, JSON.stringify dropping `undefined` keys),
+    // recover by reading the persisted Intent row — its walletAddress
+    // column is non-null by schema, so as long as the publisher wrote
+    // the row before notifying we can resync from there.
+    if (!walletAddress && intentId) {
+      try {
+        const row = await db().intent.findUnique({
+          where: { id: intentId },
+          select: { walletAddress: true },
+        });
+        if (row?.walletAddress) {
+          walletAddress = row.walletAddress;
+          ctx.log.info(`allocation walletAddress recovered from DB`, {
+            transport,
+            intentId,
+          });
+        }
+      } catch (err) {
+        ctx.log.warn('walletAddress recovery query failed', {
+          intentId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // Still nothing — this is a true orphan (no intentId or row gone).
+    // Drop quietly so we don't crash Prisma downstream.
+    if (!walletAddress) {
+      ctx.log.warn('allocation dropped — missing walletAddress', {
+        transport,
+        intentId,
+      });
+      return;
+    }
     if (intentId) {
       const claimed = await claimIntent(intentId);
       if (!claimed) return; // another transport got there first
@@ -184,11 +219,34 @@ async function handleAllocation(
   intent: AllocationIntent,
 ): Promise<void> {
   const current = await currentSlices(walletAddress);
-  const swaps = decompose(intent, current, PRIMARY_CHAIN);
+  let swaps = decompose(intent, current, PRIMARY_CHAIN, (msg, meta) =>
+    ctx.log.warn(msg, meta),
+  );
   if (swaps.length === 0) {
     ctx.log.info('within tolerance — no swaps', { walletAddress });
     return;
   }
+
+  // Pre-flight against the KH wallet — drop swaps it can't supply,
+  // resize the rest to the available balance. Default-on under
+  // USE_TESTNET so faucet-funded KH wallets stop spamming FAILED
+  // chips for swaps that were never feasible.
+  if (preflightEnabled()) {
+    const pre = await preflightSwaps(swaps);
+    for (const d of pre.dropped) {
+      ctx.log.warn('preflight dropped swap', {
+        pair: `${d.swap.tokenInSymbol}->${d.swap.tokenOutSymbol}`,
+        notionalUsd: d.swap.notionalUsd,
+        reason: d.reason,
+      });
+    }
+    swaps = pre.swaps;
+    if (swaps.length === 0) {
+      ctx.log.info('preflight — no executable swaps', { walletAddress });
+      return;
+    }
+  }
+
   for (const swap of swaps) {
     // Try internal OTC match first. If a peer Router on the AXL mesh
     // has an opposing intent at compatible size, settle wallet-to-wallet

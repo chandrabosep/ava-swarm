@@ -37,21 +37,6 @@ import {
   type InstalledSkill,
 } from './skill.js';
 
-// Sepolia has no reliable WBTC/UNI liquidity on Uniswap, so on testnet
-// we keep PM tightly scoped to ETH ↔ USDC. Mainnet keeps the full
-// universe. Override-able with PM_ALLOWED_TOKENS=ETH,USDC,WBTC,UNI.
-const ALLOWED_TOKENS: readonly string[] = (() => {
-  const override = process.env.PM_ALLOWED_TOKENS;
-  if (override) {
-    return override
-      .split(',')
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean);
-  }
-  return env.useTestnet()
-    ? (['ETH', 'USDC'] as const)
-    : (['ETH', 'WBTC', 'USDC', 'UNI'] as const);
-})();
 /** How many tool-call rounds we let the model run before forcing a JSON answer. */
 const MAX_TOOL_TURNS = 4;
 
@@ -101,32 +86,23 @@ function buildSystemPrompt(profile: RiskProfile): string {
   const stablePct = Math.round(cfg.stableFloor * 100);
   const maxPct = Math.round(cfg.maxToken * 100);
   const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
-  // Build the example dynamically from ALLOWED_TOKENS so the universe
-  // we describe matches the universe we accept (testnet = ETH+USDC,
-  // mainnet = full set). A static example with WBTC would steer the
-  // LLM toward proposing tokens we've banned for this run.
-  const exampleTargets = ALLOWED_TOKENS.slice(0, 3)
-    .map((sym, i) => {
-      const weight = i === 0 ? 0.6 : i === 1 ? 0.3 : 0.1;
-      return `    { "symbol": "${sym}", "weight": ${weight.toFixed(2)} }`;
-    })
-    .join(',\n');
   return `${cfg.persona}
 
-Your job is to propose a target allocation across the allowed token
-universe given the user's current portfolio. You output JSON ONLY,
-matching this schema:
+Your job is to propose a target allocation given the user's current
+portfolio. You output JSON ONLY, matching this schema:
 
 {
   "rationale": "<2-3 sentence explanation>",
   "targets": [
-${exampleTargets}
+    { "symbol": "ETH",  "weight": 0.60 },
+    { "symbol": "USDC", "weight": 0.30 },
+    { "symbol": "WBTC", "weight": 0.10 }
   ]
 }
 
 Rules:
-1. Allowed symbols: ${ALLOWED_TOKENS.join(', ')}. Do NOT propose any other symbol.
-2. weights sum to exactly 1.0.
+1. Pick any tokens you think fit the strategy. No fixed universe.
+2. Weights sum to exactly 1.0.
 3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
 4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
 5. Move at most ${cfg.maxShiftPerTick.toFixed(2)} (${shiftPct}%) in absolute
@@ -162,20 +138,29 @@ export async function decideAllocation(
     throw new Error(`PM LLM returned no targets: ${text.slice(0, 200)}`);
   }
 
-  // Defensive normalization — clamp to allowed universe, renormalize sum.
-  const filtered = parsed.targets.filter((t) =>
-    (ALLOWED_TOKENS as readonly string[]).includes(t.symbol),
-  );
-  const sum = filtered.reduce((s, t) => s + t.weight, 0);
+  // Renormalize weights to sum to 1.0 (LLM might emit slightly off
+  // sums) and uppercase symbols for downstream matching. No symbol
+  // filtering — PM proposes whatever the LLM picks; Router decides
+  // whether it can resolve an address for that symbol on the target
+  // chain.
+  const cleaned = parsed.targets
+    .filter((t) => typeof t.symbol === 'string' && t.weight > 0)
+    .map((t) => ({ symbol: t.symbol.toUpperCase(), weight: t.weight }));
+  const sum = cleaned.reduce((s, t) => s + t.weight, 0);
   const targets =
     sum > 0
-      ? filtered.map((t) => ({ symbol: t.symbol, weight: t.weight / sum }))
+      ? cleaned.map((t) => ({ symbol: t.symbol, weight: t.weight / sum }))
       : [];
 
   return {
     kind: 'allocation',
     targets,
     toleranceBps: params.toleranceBps,
+    // Surface the LLM's reasoning to the dashboard activity feed —
+    // users want to see *why* the swarm is rebalancing, not just that
+    // it is. The risk-profile badge is rendered next to it.
+    rationale: parsed.rationale,
+    profile: params.riskProfile,
   };
 }
 

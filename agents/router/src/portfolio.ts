@@ -6,10 +6,13 @@
 // Source: Zerion on mainnets (where it's indexed), Alchemy on testnets
 // (Zerion doesn't cover Sepolia/Base Sepolia). Toggled by USE_TESTNET.
 //
-// Reads from the KH-managed wallet, not the user's EOA — same reason
-// as PM (see agents/pm/src/portfolio.ts header). Router's deltas need
-// to match what KH can actually transferFrom. Override with
-// PM_PORTFOLIO_FROM=eoa for the EIP-7702 path.
+// Reads from the user's EOA by default — under EIP-7702 the EOA *is*
+// the smart account, so PM's targets and Router's "current slices"
+// must reference the same wallet or the diff math goes the wrong way
+// (PM proposes targets against EOA, Router compares them against KH,
+// emits opposite-direction swaps). Set PM_PORTFOLIO_FROM=kh for the
+// legacy Model B path where Router needs to track the KH wallet's
+// holdings instead.
 
 import {
   env,
@@ -42,13 +45,14 @@ interface ZerionPositionsResponse {
 
 const ALLOWED: Symbol[] = ['ETH', 'WETH', 'WBTC', 'USDC', 'UNI'];
 
-/** Same selector PM uses — reads KH wallet by default, user EOA when
- *  PM_PORTFOLIO_FROM=eoa. Keeps Router's view of "current holdings"
- *  aligned with what Executor can actually pull from. */
+/** Same selector PM uses — reads the user's EOA by default. Override
+ *  with PM_PORTFOLIO_FROM=kh to revert to the legacy KH-wallet path. */
 function effectiveWallet(userEoa: string): string {
-  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'kh').toLowerCase();
-  if (mode === 'eoa') return userEoa;
-  return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
+  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'eoa').toLowerCase();
+  if (mode === 'kh') {
+    return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
+  }
+  return userEoa;
 }
 
 export async function currentSlices(wallet: string): Promise<CurrentSlice[]> {

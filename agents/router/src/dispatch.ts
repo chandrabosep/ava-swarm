@@ -43,6 +43,17 @@ export interface DispatchParams {
 export async function dispatch(params: DispatchParams): Promise<void> {
   const { ctx, walletAddress, originIntentId, swap } = params;
 
+  // Hard precondition: every routed/event row needs a walletAddress.
+  // Anything upstream that slipped through with undefined gets refused
+  // here instead of crashing Prisma.
+  if (!walletAddress) {
+    ctx.log.warn('dispatch refused — missing walletAddress', {
+      originIntentId,
+      pair: `${swap.tokenInSymbol}->${swap.tokenOutSymbol}`,
+    });
+    return;
+  }
+
   // Belt-and-braces guard: if anything upstream tries to dispatch a
   // mainnet swap while USE_TESTNET=true (stale cache, concurrent
   // process holding old code, race during env reload, etc), refuse

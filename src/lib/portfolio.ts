@@ -70,3 +70,32 @@ export function uniqueChainCount(positions: ZerionPosition[]): number {
   }
   return chains.size;
 }
+
+/** Symbols we treat as stables for the Stable Ratio readout. We keep the
+ *  set tight on purpose — wrapping coverage here drags the dashboard's
+ *  notion of "risk-off" away from what the PM agent's stableFloor knob
+ *  actually controls. */
+const STABLE_SYMBOLS: ReadonlySet<string> = new Set([
+  'USDC',
+  'USDT',
+  'DAI',
+  'USDB',
+  'PYUSD',
+  'FDUSD',
+  'TUSD',
+  'BUSD',
+]);
+
+/** USD value parked in stablecoin positions. Used by SummaryCards' Stable
+ *  Ratio card. Returns 0 when positions array is empty/missing. */
+export function stableUsdFromPortfolio(positions: ZerionPosition[]): number {
+  let stableUsd = 0;
+  for (const p of positions) {
+    if (!p.attributes.flags.displayable) continue;
+    const symbol = p.attributes.fungible_info.symbol?.toUpperCase();
+    if (symbol && STABLE_SYMBOLS.has(symbol)) {
+      stableUsd += p.attributes.value ?? 0;
+    }
+  }
+  return stableUsd;
+}

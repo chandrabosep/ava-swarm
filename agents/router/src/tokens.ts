@@ -7,6 +7,9 @@
 import type { Address } from 'viem';
 import type { SupportedChain } from '@swarm/shared';
 
+// Canonical short list with hard-coded addresses. PM is unbounded (can
+// propose anything), so callers of resolve() must handle the `null`
+// return for symbols outside this set.
 export type Symbol = 'ETH' | 'WETH' | 'WBTC' | 'USDC' | 'UNI';
 
 interface ChainTokens {
@@ -54,10 +57,17 @@ export const TOKENS: Record<SupportedChain, ChainTokens> = {
   },
 };
 
+/** Resolve a symbol → on-chain address for the given chain. Returns
+ *  null when we don't have an address mapping (PM proposing exotic
+ *  tokens like MATIC, SOL, etc on a chain where we haven't catalogued
+ *  them). Callers should drop those targets gracefully. */
 export function resolve(
-  symbol: Symbol,
+  symbol: string,
   chain: SupportedChain,
-): Address {
+): Address | null {
   if (symbol === 'ETH') return ETH_PSEUDO;
-  return TOKENS[chain][symbol];
+  const chainMap = TOKENS[chain];
+  if (!chainMap) return null;
+  const addr = (chainMap as unknown as Record<string, Address | undefined>)[symbol];
+  return addr ?? null;
 }
