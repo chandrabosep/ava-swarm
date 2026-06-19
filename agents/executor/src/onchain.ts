@@ -33,9 +33,38 @@ export const WETH_ADDRESS: Record<ChainName, Address> = {
   'base-sepolia': '0x4200000000000000000000000000000000000006',
 };
 
-/** Uniswap V3 SwapRouter02 (immutable, same on every supported chain). */
-export const SWAP_ROUTER_02: Address =
-  '0xE592427A0AEce92De3Edee1F18E0157C05861564';
+/** Uniswap V3 SwapRouter02 — chain-specific. The address `0xE592...`
+ *  that's "the same on every chain" is actually the legacy V3
+ *  SwapRouter (V1), not SwapRouter02. On Sepolia / Base Sepolia /
+ *  Unichain those legacy contracts don't exist, so an approval there
+ *  is a no-op and any swap STFs.
+ *
+ *  Source: https://docs.uniswap.org/contracts/v3/reference/deployments
+ *  Override per chain via UNISWAP_SWAP_ROUTER_<CHAIN>.
+ */
+export const SWAP_ROUTER_02_BY_CHAIN: Record<ChainName, Address> = {
+  mainnet: (process.env.UNISWAP_SWAP_ROUTER_MAINNET ??
+    '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45') as Address,
+  base: (process.env.UNISWAP_SWAP_ROUTER_BASE ??
+    '0x2626664c2603336E57B271c5C0b26F421741e481') as Address,
+  unichain: (process.env.UNISWAP_SWAP_ROUTER_UNICHAIN ??
+    '0x73855d06DE49d0fe4A9c42636Ba96c62da12FF9C') as Address,
+  sepolia: (process.env.UNISWAP_SWAP_ROUTER_SEPOLIA ??
+    '0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E') as Address,
+  'base-sepolia': (process.env.UNISWAP_SWAP_ROUTER_BASE_SEPOLIA ??
+    '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4') as Address,
+};
+
+/** Resolve the SwapRouter02 address for a chain. Throws if unknown. */
+export function swapRouterFor(chain: ChainName): Address {
+  const addr = SWAP_ROUTER_02_BY_CHAIN[chain];
+  if (!addr) throw new Error(`No SwapRouter02 configured for chain ${chain}`);
+  return addr;
+}
+
+/** @deprecated Use swapRouterFor(chain) instead. Kept for back-compat
+ *  with call sites that haven't migrated; defaults to mainnet. */
+export const SWAP_ROUTER_02: Address = SWAP_ROUTER_02_BY_CHAIN.mainnet;
 
 /** Public RPC per chain — overridable via env. */
 function rpcUrl(chain: ChainName): string {
