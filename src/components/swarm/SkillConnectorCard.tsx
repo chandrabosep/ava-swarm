@@ -25,8 +25,10 @@ import {
   clearSkill,
   getSkill,
   setSkill,
+  testHermes,
   type SkillState,
   type SkillPatch,
+  type HermesTestResult,
 } from '@/lib/agents-api';
 
 type Phase = 'paste-skill' | 'paste-key' | 'installed';
@@ -158,13 +160,26 @@ export function SkillConnectorCard() {
     if (phase !== 'paste-key') setDraftKey('');
   }, [phase]);
 
+  // Hermes smoke test — kept as a one-shot mutation so the result lingers
+  // in `data` until the user clicks again or unmounts.
+  const hermesTest = useMutation<HermesTestResult>({
+    mutationFn: testHermes,
+  });
+
   const headerBadge = useMemo(() => {
-    if (phase === 'installed')
-      return <Badge tone="positive" dot>installed</Badge>;
+    if (phase === 'installed') {
+      // "installed" is local — the more useful signal is whether the PM
+      // is actually consuming the skill. `pmActive` rolls up provider +
+      // content + key + ≥1 callable host into a single bool.
+      if (skill.data?.pmActive) {
+        return <Badge tone="positive" dot>live in PM</Badge>;
+      }
+      return <Badge tone="warning" dot>installed · idle</Badge>;
+    }
     if (phase === 'paste-key')
       return <Badge tone="warning" dot>needs key</Badge>;
     return <Badge tone="neutral">no skill yet</Badge>;
-  }, [phase]);
+  }, [phase, skill.data?.pmActive]);
 
   const detectedSummary =
     skill.data?.hasSkill && (skill.data.name || skill.data.version)
@@ -367,10 +382,26 @@ description: The social network for AI agents.
       {/* ===== STEP 3: installed ===== */}
       {phase === 'installed' && skill.data && (
         <div className="space-y-4">
-          <div className="rounded-md border border-positive/30 bg-positive/5 px-3 py-2 text-xs leading-relaxed">
-            <div className="flex items-center gap-2">
+          <div
+            className={[
+              'rounded-md border px-3 py-2 text-xs leading-relaxed',
+              skill.data.pmActive
+                ? 'border-positive/30 bg-positive/5'
+                : 'border-warning/30 bg-warning/5',
+            ].join(' ')}
+          >
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-base">🪝</span>
-              <span className="font-semibold text-positive">connector live.</span>
+              <span
+                className={[
+                  'font-semibold',
+                  skill.data.pmActive ? 'text-positive' : 'text-warning',
+                ].join(' ')}
+              >
+                {skill.data.pmActive
+                  ? 'live in PM tick.'
+                  : 'connector idle.'}
+              </span>
               <span className="font-mono text-fg">
                 {detectedSummary ?? 'unnamed skill'}
               </span>
@@ -380,6 +411,30 @@ description: The social network for AI agents.
             </div>
             {skill.data.description && (
               <div className="mt-1 text-fg-muted">{skill.data.description}</div>
+            )}
+            {!skill.data.pmActive && (
+              <div className="mt-2 text-[11px] text-fg-muted">
+                {skill.data.llmProvider !== 'hermes' ? (
+                  <>
+                    PM is currently running on{' '}
+                    <span className="font-mono">{skill.data.llmProvider}</span>.
+                    Set <span className="font-mono">LLM_PROVIDER=hermes</span>{' '}
+                    in <span className="font-mono">agents/.env</span> to let
+                    PM consume this skill.
+                  </>
+                ) : skill.data.allowedHosts.length === 0 ? (
+                  <>
+                    No <span className="font-mono">https://</span> hosts found
+                    in the skill markdown — the PM tool loop has nothing to
+                    call. Re-paste a skill that mentions its API host(s).
+                  </>
+                ) : (
+                  <>
+                    Skill installed but PM hasn't picked it up — try the test
+                    button below.
+                  </>
+                )}
+              </div>
             )}
           </div>
 
@@ -391,6 +446,18 @@ description: The social network for AI agents.
               [
                 'api key',
                 skill.data.keyTail ? `••••${skill.data.keyTail}` : '—',
+              ],
+              [
+                'pm provider',
+                skill.data.llmProvider === 'hermes'
+                  ? `hermes · ${skill.data.hermesModel ?? '?'}`
+                  : skill.data.llmProvider,
+              ],
+              [
+                'allowed hosts',
+                skill.data.allowedHosts.length === 0
+                  ? '—'
+                  : `${skill.data.allowedHosts.length} host${skill.data.allowedHosts.length === 1 ? '' : 's'}`,
               ],
             ].map(([k, v]) => (
               <div
@@ -405,6 +472,102 @@ description: The social network for AI agents.
                 </div>
               </div>
             ))}
+          </div>
+
+          {skill.data.allowedHosts.length > 0 && (
+            <div className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-fg-subtle mb-1">
+                Hosts the skill can call
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {skill.data.allowedHosts.map((h) => (
+                  <span
+                    key={h}
+                    className="font-mono text-[11px] text-fg bg-bg border border-border-subtle rounded px-1.5 py-0.5"
+                  >
+                    {h}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-1.5 text-[10px] text-fg-subtle">
+                Your PM can issue tool calls to these hosts only — the API
+                key is attached server-side, never in the LLM prompt.
+              </div>
+            </div>
+          )}
+
+          {/* Hermes test panel — actionable when provider=hermes; informational otherwise. */}
+          <div className="rounded-md border border-border-subtle bg-bg-raised px-3 py-2 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] uppercase tracking-wider text-fg-subtle">
+                Hermes endpoint
+              </span>
+              <span className="text-[11px] font-mono text-fg-muted truncate">
+                {skill.data.hermesBaseUrl ?? '—'}
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="ml-auto"
+                onClick={() => hermesTest.mutate()}
+                disabled={hermesTest.isPending || !skill.data.hermesConfigured}
+                title={
+                  skill.data.hermesConfigured
+                    ? undefined
+                    : 'HERMES_API_KEY not set on the agents server'
+                }
+              >
+                {hermesTest.isPending ? 'pinging…' : 'Test Hermes'}
+              </Button>
+            </div>
+            {!skill.data.hermesConfigured && (
+              <div className="text-[11px] text-warning">
+                <span className="font-mono">HERMES_API_KEY</span> not configured
+                on the agents server — PM won't be able to reach Hermes.
+              </div>
+            )}
+            {hermesTest.data && (
+              <div
+                className={[
+                  'text-[11px] rounded px-2 py-1.5 border',
+                  hermesTest.data.ok
+                    ? 'text-positive border-positive/30 bg-positive/5'
+                    : 'text-negative border-negative/30 bg-negative/10',
+                ].join(' ')}
+              >
+                {hermesTest.data.ok ? (
+                  <>
+                    <span className="font-mono">{hermesTest.data.model}</span>{' '}
+                    replied <span className="font-mono">"{hermesTest.data.sample ?? ''}"</span>{' '}
+                    in {hermesTest.data.latencyMs}ms.
+                  </>
+                ) : (
+                  <>
+                    <span className="font-semibold">
+                      {hermesTest.data.status
+                        ? `${hermesTest.data.status} `
+                        : ''}
+                      failed:
+                    </span>{' '}
+                    <span className="font-mono">
+                      {hermesTest.data.error ?? 'unknown error'}
+                    </span>
+                    {hermesTest.data.hint && (
+                      <div className="mt-0.5 text-fg-muted">
+                        {hermesTest.data.hint}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {hermesTest.error && !hermesTest.data && (
+              <div className="text-[11px] text-negative">
+                {hermesTest.error instanceof Error
+                  ? hermesTest.error.message
+                  : String(hermesTest.error)}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2 pt-1 flex-wrap">
@@ -425,8 +588,9 @@ description: The social network for AI agents.
               Uninstall skill
             </Button>
             <span className="text-[10px] text-fg-subtle ml-auto">
-              connector ready — your Hermes can pull the skill + key when it
-              wakes up
+              {skill.data.pmActive
+                ? 'PM will pull the skill + key on its next tick.'
+                : 'connector ready — flip PM to hermes to start using it.'}
             </span>
           </div>
         </div>

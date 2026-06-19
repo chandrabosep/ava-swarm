@@ -95,6 +95,20 @@ export interface SkillState {
   contentLength: number;
   installedAt: string | null;
   updatedAt: string | null;
+  /** Hosts the PM tool-call loop is allowed to hit on the skill's behalf. */
+  allowedHosts: string[];
+  /** Which LLM provider PM is currently configured to use. */
+  llmProvider: 'groq' | 'hermes';
+  /** True when HERMES_API_KEY is set on the agents server. */
+  hermesConfigured: boolean;
+  hermesModel: string | null;
+  hermesBaseUrl: string | null;
+  /**
+   * True when all the conditions for the PM to actually use the skill are
+   * met (provider=hermes, content+key installed, ≥1 callable host). Drives
+   * the "live in PM" pill in the connector card.
+   */
+  pmActive: boolean;
 }
 
 export async function getSkill(): Promise<SkillState> {
@@ -141,5 +155,44 @@ export async function clearSkill(): Promise<void> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`clearSkill ${res.status}: ${text || res.statusText}`);
+  }
+}
+
+// =====================================================================
+// Hermes connection test
+// =====================================================================
+//
+// Pings the configured Hermes endpoint with a one-token chat completion
+// and reports back. Used by the connector card's "Test Hermes" button so
+// users can verify their HERMES_* env vars work without waiting for a PM
+// tick to fail.
+
+export interface HermesTestResult {
+  ok: boolean;
+  status?: number;
+  latencyMs?: number;
+  model?: string | null;
+  baseUrl?: string | null;
+  /** Trimmed content of the model's reply. Only populated on success. */
+  sample?: string | null;
+  /** Upstream error message (truncated server-side) when ok=false. */
+  error?: string;
+  /** Optional human hint for the most common misconfig. */
+  hint?: string;
+}
+
+export async function testHermes(): Promise<HermesTestResult> {
+  const res = await fetch(`${AGENTS_API_URL}/api/hermes/test`, {
+    method: 'POST',
+  });
+  // The server returns structured JSON for both success (200) and the
+  // expected failure modes (400 missing key, 502 upstream error). Pass
+  // those through verbatim. Only fall through to a thrown Error on a
+  // genuine non-JSON response (e.g. Express 5xx from elsewhere).
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as HermesTestResult;
+  } catch {
+    throw new Error(`testHermes ${res.status}: ${text || res.statusText}`);
   }
 }

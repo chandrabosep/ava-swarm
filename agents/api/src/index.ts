@@ -391,21 +391,99 @@ function parseSkillFrontmatter(content: string): SkillFrontmatter {
   return out;
 }
 
+/**
+ * Pull the set of distinct https hosts referenced in the skill markdown.
+ * The PM uses this list as the allowlist when the model invokes
+ * `call_skill_api` — the API server surfaces it for the UI so users can
+ * see which hosts their skill is actually allowed to talk to. Logic
+ * mirrors agents/pm/src/skill.ts:extractHosts; kept duplicated to keep
+ * `@swarm/shared` free of skill-runtime concerns.
+ */
+function extractSkillHosts(content: string | null | undefined): string[] {
+  if (!content) return [];
+  const out = new Set<string>();
+  const re = /https?:\/\/([a-zA-Z0-9.\-]+)(?::\d+)?(?:\/|\b)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content))) {
+    const host = m[1].toLowerCase();
+    if (host === 'example.com' || host === 'localhost') continue;
+    out.add(host);
+  }
+  return [...out];
+}
+
+/**
+ * Snapshot of the LLM provider currently selected for PM ticks. The skill
+ * connector only drives the PM when provider==='hermes' AND a skill is
+ * installed AND the skill exposes at least one callable host — so the UI
+ * needs all three pieces to render the right status.
+ */
+function llmStatus(): {
+  provider: 'groq' | 'hermes';
+  hermesConfigured: boolean;
+  hermesModel: string | null;
+  hermesBaseUrl: string | null;
+} {
+  const provider = (process.env.LLM_PROVIDER ?? 'groq').toLowerCase() === 'hermes'
+    ? 'hermes'
+    : 'groq';
+  const hermesConfigured = !!process.env.HERMES_API_KEY;
+  return {
+    provider,
+    hermesConfigured,
+    hermesModel: process.env.HERMES_MODEL ?? 'Hermes-4-405B',
+    hermesBaseUrl:
+      process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1',
+  };
+}
+
+/**
+ * Build the wire shape returned by GET/PUT /api/skill. Centralized so the
+ * PUT response and the GET response stay in lock-step (they both feed the
+ * same React Query cache key).
+ */
+function buildSkillState(row: {
+  skillContent: string | null;
+  skillApiKey: string | null;
+  skillName: string | null;
+  skillVersion: string | null;
+  skillDescription: string | null;
+  skillInstalledAt: Date | null;
+  updatedAt: Date;
+} | null) {
+  const allowedHosts = extractSkillHosts(row?.skillContent);
+  const llm = llmStatus();
+  // The PM only injects the skill when Hermes is selected, content is
+  // present, the key is present, and the skill listed at least one host.
+  const pmActive =
+    llm.provider === 'hermes' &&
+    !!row?.skillContent &&
+    !!row?.skillApiKey &&
+    allowedHosts.length > 0;
+  return {
+    hasSkill: !!row?.skillContent,
+    hasKey: !!row?.skillApiKey,
+    keyTail: keyTail(row?.skillApiKey),
+    name: row?.skillName ?? null,
+    version: row?.skillVersion ?? null,
+    description: row?.skillDescription ?? null,
+    // Length only — don't ship the full markdown back on every poll.
+    contentLength: row?.skillContent?.length ?? 0,
+    installedAt: row?.skillInstalledAt ?? null,
+    updatedAt: row?.updatedAt ?? null,
+    allowedHosts,
+    llmProvider: llm.provider,
+    hermesConfigured: llm.hermesConfigured,
+    hermesModel: llm.hermesModel,
+    hermesBaseUrl: llm.hermesBaseUrl,
+    pmActive,
+  };
+}
+
 app.get('/api/skill', async (_req, res) => {
   try {
     const row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
-    return res.json({
-      hasSkill: !!row?.skillContent,
-      hasKey: !!row?.skillApiKey,
-      keyTail: keyTail(row?.skillApiKey),
-      name: row?.skillName ?? null,
-      version: row?.skillVersion ?? null,
-      description: row?.skillDescription ?? null,
-      // Length only — don't ship the full markdown back on every poll.
-      contentLength: row?.skillContent?.length ?? 0,
-      installedAt: row?.skillInstalledAt ?? null,
-      updatedAt: row?.updatedAt ?? null,
-    });
+    return res.json(buildSkillState(row));
   } catch (err) {
     log.error('get skill failed', {
       err: err instanceof Error ? err.message : String(err),
@@ -489,19 +567,10 @@ app.put('/api/skill', async (req, res) => {
       hasKey: !!saved.skillApiKey,
       keyTail: keyTail(saved.skillApiKey),
       contentLength: saved.skillContent?.length ?? 0,
+      allowedHosts: extractSkillHosts(saved.skillContent),
     });
 
-    return res.json({
-      hasSkill: !!saved.skillContent,
-      hasKey: !!saved.skillApiKey,
-      keyTail: keyTail(saved.skillApiKey),
-      name: saved.skillName,
-      version: saved.skillVersion,
-      description: saved.skillDescription,
-      contentLength: saved.skillContent?.length ?? 0,
-      installedAt: saved.skillInstalledAt,
-      updatedAt: saved.updatedAt,
-    });
+    return res.json(buildSkillState(saved));
   } catch (err) {
     log.error('update skill failed', {
       err: err instanceof Error ? err.message : String(err),
@@ -529,6 +598,107 @@ app.delete('/api/skill', async (_req, res) => {
       err: err instanceof Error ? err.message : String(err),
     });
     return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// =====================================================================
+// Hermes connection test
+// =====================================================================
+//
+// Smoke-tests the configured Hermes endpoint with a one-token chat
+// completion. The UI calls this from the connector card after a user
+// pastes their key/configures env so they get instant "yes, your Hermes
+// is reachable" feedback instead of waiting for the next PM tick to
+// blow up.
+//
+// Why a custom fetch instead of the OpenAI SDK? Keeps agents/api free
+// of an SDK dep just to issue one HTTP POST — the request body is OAI-
+// compatible and tiny. We propagate the upstream status code and the
+// first line of the error so the UI can surface "401: invalid api key"
+// or "404: model not found" without us guessing.
+
+const HERMES_TEST_TIMEOUT_MS = 10_000;
+
+app.post('/api/hermes/test', async (_req, res) => {
+  const apiKey = process.env.HERMES_API_KEY ?? '';
+  const baseUrl =
+    process.env.HERMES_BASE_URL ?? 'https://inference-api.nousresearch.com/v1';
+  const model = process.env.HERMES_MODEL ?? 'Hermes-4-405B';
+
+  if (!apiKey) {
+    return res.status(400).json({
+      ok: false,
+      error: 'HERMES_API_KEY not set on the agents server',
+      hint: 'set HERMES_API_KEY in agents/.env and restart the API',
+    });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HERMES_TEST_TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    const upstream = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        max_tokens: 8,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: 'Reply with the single word: ok',
+          },
+        ],
+      }),
+    });
+
+    const latencyMs = Date.now() - started;
+    const text = await upstream.text();
+    let parsed: { choices?: Array<{ message?: { content?: string } }> } | null = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Non-JSON upstream response — pass the first 200 chars through.
+    }
+    if (!upstream.ok) {
+      return res.status(502).json({
+        ok: false,
+        status: upstream.status,
+        latencyMs,
+        model,
+        baseUrl,
+        error: text.slice(0, 200),
+      });
+    }
+    const sample = parsed?.choices?.[0]?.message?.content?.trim() ?? null;
+    return res.json({
+      ok: true,
+      status: upstream.status,
+      latencyMs,
+      model,
+      baseUrl,
+      sample,
+    });
+  } catch (err) {
+    return res.status(502).json({
+      ok: false,
+      latencyMs: Date.now() - started,
+      model,
+      baseUrl,
+      error:
+        err instanceof Error
+          ? err.name === 'AbortError'
+            ? `timed out after ${HERMES_TEST_TIMEOUT_MS}ms`
+            : err.message
+          : String(err),
+    });
+  } finally {
+    clearTimeout(timer);
   }
 });
 
