@@ -28,7 +28,9 @@ const ALLOWED_ORIGINS = (process.env.API_ALLOWED_ORIGINS ?? '')
   .filter(Boolean);
 
 const app = express();
-app.use(express.json({ limit: '64kb' }));
+// 256KB ceiling — large enough for a full Hermes skill markdown
+// (Moltbook's SKILL.md is ~34KB) but still bounded against abuse.
+app.use(express.json({ limit: '256kb' }));
 app.use(
   cors({
     origin: (origin, cb) => {
@@ -328,105 +330,152 @@ app.get('/api/status/:safeAddress', async (req, res) => {
   }
 });
 
+// =====================================================================
+// Skill connector
+// =====================================================================
+//
+// A "skill" is a markdown file (Hermes-Agent style) that describes how
+// to interact with some external service — see e.g. Moltbook's SKILL.md
+// at https://www.moltbook.com/skill.md. The user pastes the skill into
+// the extension, then pastes the API key for whatever service the skill
+// targets. The swarm just persists both. Whether the skill is then
+// driven by the user's Hermes (running elsewhere) or by a future swarm-
+// side worker is downstream — this layer is storage only.
+//
+// Three endpoints:
+//   GET    /api/skill        — current install (skill metadata + keyTail).
+//                              Never echoes the full content+key.
+//   PUT    /api/skill        — patch: { content?, apiKey?, clearKey? }
+//                              On content paste we parse the YAML
+//                              frontmatter and pull out name / version /
+//                              description so the UI can show "installed:
+//                              moltbook v1.12.0" without re-parsing.
+//   DELETE /api/skill        — wipe everything (skill + key).
+
+const keyTail = (k: string | null | undefined): string | null =>
+  k && k.length >= 4 ? k.slice(-4) : null;
+
+interface SkillFrontmatter {
+  name: string | null;
+  version: string | null;
+  description: string | null;
+}
+
 /**
- * Hermes / LLM provider override.
- *
- * One global settings row — paste an API key + model + (optional) skill
- * text from the extension and PM picks it up on the next tick instead of
- * the env-var Groq defaults. We never echo the full API key back to the
- * UI; once it's saved the GET response only reports `hasKey: true` and a
- * masked tail. To rotate, paste a new key.
+ * Parse the YAML-ish frontmatter from a Hermes skill file. We don't pull
+ * a YAML lib for this — frontmatter blocks are simple key:value lines and
+ * the only nested thing in the wild (Moltbook's `metadata: {…}` JSON) we
+ * skip. If parsing fails we just return all-nulls; the swarm still stores
+ * the raw content.
  */
-app.get('/api/settings/hermes', async (_req, res) => {
+function parseSkillFrontmatter(content: string): SkillFrontmatter {
+  const empty: SkillFrontmatter = { name: null, version: null, description: null };
+  const m = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return empty;
+  const block = m[1];
+  const out: SkillFrontmatter = { ...empty };
+  for (const line of block.split(/\r?\n/)) {
+    const kv = line.match(/^(name|version|description)\s*:\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const key = kv[1] as keyof SkillFrontmatter;
+    let val = kv[2];
+    // Strip surrounding quotes if present.
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+app.get('/api/skill', async (_req, res) => {
   try {
     const row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
     return res.json({
-      enabled: row?.hermesEnabled ?? false,
-      hasKey: !!row?.hermesApiKey,
-      // Only the last 4 chars are shown — enough to recognize "is this the
-      // key I pasted earlier?" without exposing it on the wire on every
-      // page load.
-      keyTail: row?.hermesApiKey ? row.hermesApiKey.slice(-4) : null,
-      model: row?.hermesModel ?? null,
-      baseUrl: row?.hermesBaseUrl ?? null,
-      skill: row?.hermesSkill ?? null,
+      hasSkill: !!row?.skillContent,
+      hasKey: !!row?.skillApiKey,
+      keyTail: keyTail(row?.skillApiKey),
+      name: row?.skillName ?? null,
+      version: row?.skillVersion ?? null,
+      description: row?.skillDescription ?? null,
+      // Length only — don't ship the full markdown back on every poll.
+      contentLength: row?.skillContent?.length ?? 0,
+      installedAt: row?.skillInstalledAt ?? null,
       updatedAt: row?.updatedAt ?? null,
     });
   } catch (err) {
-    log.error('get hermes settings failed', {
+    log.error('get skill failed', {
       err: err instanceof Error ? err.message : String(err),
     });
     return res.status(500).json({ error: 'internal error' });
   }
 });
 
-interface HermesSettingsPutBody {
-  enabled?: boolean;
-  /** Send `null` (or omit + clearKey:true) to wipe the stored key. */
+interface SkillPutBody {
+  /** Paste the full skill markdown. `null` to clear, omitted to leave alone. */
+  content?: string | null;
+  /** Paste the API key. `null` (or `clearKey:true`) to clear. */
   apiKey?: string | null;
-  model?: string | null;
-  baseUrl?: string | null;
-  skill?: string | null;
-  /** Explicit "delete the saved key" flag, since omission means "leave alone". */
   clearKey?: boolean;
 }
 
-app.put('/api/settings/hermes', async (req, res) => {
+app.put('/api/skill', async (req, res) => {
   try {
-    const body = (req.body ?? {}) as HermesSettingsPutBody;
-
+    const body = (req.body ?? {}) as SkillPutBody;
     const existing =
       (await db().swarmSettings.findUnique({ where: { id: 'global' } })) ?? null;
 
-    // Diff semantics: undefined = leave alone, null = clear, string = overwrite.
-    // For the API key specifically we accept either `apiKey: null` or
-    // `clearKey: true` so the UI doesn't have to know the convention.
-    //
-    // Special case: if the caller is wiping the key but didn't explicitly
-    // touch `enabled`, force it off. Otherwise we'd land in the
-    // enabled=true / no-key state and reject their own request below.
-    const isClearingKey = body.clearKey === true || body.apiKey === null;
-    const next = {
-      hermesEnabled:
-        typeof body.enabled === 'boolean'
-          ? body.enabled
-          : isClearingKey
-            ? false
-            : existing?.hermesEnabled ?? false,
-      hermesApiKey:
-        body.clearKey || body.apiKey === null
-          ? null
-          : typeof body.apiKey === 'string' && body.apiKey.length > 0
-            ? body.apiKey
-            : (existing?.hermesApiKey ?? null),
-      hermesModel:
-        body.model === null
-          ? null
-          : typeof body.model === 'string'
-            ? body.model
-            : (existing?.hermesModel ?? null),
-      hermesBaseUrl:
-        body.baseUrl === null
-          ? null
-          : typeof body.baseUrl === 'string'
-            ? body.baseUrl
-            : (existing?.hermesBaseUrl ?? null),
-      hermesSkill:
-        body.skill === null
-          ? null
-          : typeof body.skill === 'string'
-            ? body.skill
-            : (existing?.hermesSkill ?? null),
-    };
-
-    // Refuse to flip enabled=true with no key on file — surface this
-    // early so the UI can render "paste a key first" rather than letting
-    // PM crash on the next tick.
-    if (next.hermesEnabled && !next.hermesApiKey) {
-      return res
-        .status(400)
-        .json({ error: 'cannot enable Hermes without an API key' });
+    // Resolve the new content + frontmatter. `undefined` = leave alone,
+    // `null` = clear, string = overwrite + reparse.
+    let nextContent: string | null;
+    let nextFm: SkillFrontmatter;
+    if (body.content === null) {
+      nextContent = null;
+      nextFm = { name: null, version: null, description: null };
+    } else if (typeof body.content === 'string') {
+      if (body.content.length > 200_000) {
+        return res.status(413).json({ error: 'skill content > 200KB rejected' });
+      }
+      nextContent = body.content;
+      nextFm = parseSkillFrontmatter(body.content);
+    } else {
+      nextContent = existing?.skillContent ?? null;
+      nextFm = {
+        name: existing?.skillName ?? null,
+        version: existing?.skillVersion ?? null,
+        description: existing?.skillDescription ?? null,
+      };
     }
+
+    const isClearingKey = body.clearKey === true || body.apiKey === null;
+    const nextKey =
+      isClearingKey
+        ? null
+        : typeof body.apiKey === 'string' && body.apiKey.length > 0
+          ? body.apiKey
+          : (existing?.skillApiKey ?? null);
+
+    // First-install timestamp: stamp once when the row goes from "no
+    // skill" to "skill present", and clear when content is cleared.
+    const wasInstalled = !!existing?.skillContent;
+    const willBeInstalled = !!nextContent;
+    const nextInstalledAt = willBeInstalled
+      ? wasInstalled
+        ? (existing?.skillInstalledAt ?? new Date())
+        : new Date()
+      : null;
+
+    const next = {
+      skillContent: nextContent,
+      skillName: nextFm.name,
+      skillVersion: nextFm.version,
+      skillDescription: nextFm.description,
+      skillApiKey: nextKey,
+      skillInstalledAt: nextInstalledAt,
+    };
 
     const saved = await db().swarmSettings.upsert({
       where: { id: 'global' },
@@ -434,25 +483,49 @@ app.put('/api/settings/hermes', async (req, res) => {
       create: { id: 'global', ...next },
     });
 
-    log.info('hermes settings updated', {
-      enabled: saved.hermesEnabled,
-      hasKey: !!saved.hermesApiKey,
-      model: saved.hermesModel,
-      baseUrl: saved.hermesBaseUrl,
-      skillLen: saved.hermesSkill?.length ?? 0,
+    log.info('skill updated', {
+      name: saved.skillName,
+      version: saved.skillVersion,
+      hasKey: !!saved.skillApiKey,
+      keyTail: keyTail(saved.skillApiKey),
+      contentLength: saved.skillContent?.length ?? 0,
     });
 
     return res.json({
-      enabled: saved.hermesEnabled,
-      hasKey: !!saved.hermesApiKey,
-      keyTail: saved.hermesApiKey ? saved.hermesApiKey.slice(-4) : null,
-      model: saved.hermesModel,
-      baseUrl: saved.hermesBaseUrl,
-      skill: saved.hermesSkill,
+      hasSkill: !!saved.skillContent,
+      hasKey: !!saved.skillApiKey,
+      keyTail: keyTail(saved.skillApiKey),
+      name: saved.skillName,
+      version: saved.skillVersion,
+      description: saved.skillDescription,
+      contentLength: saved.skillContent?.length ?? 0,
+      installedAt: saved.skillInstalledAt,
       updatedAt: saved.updatedAt,
     });
   } catch (err) {
-    log.error('update hermes settings failed', {
+    log.error('update skill failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.delete('/api/skill', async (_req, res) => {
+  try {
+    await db().swarmSettings.update({
+      where: { id: 'global' },
+      data: {
+        skillContent: null,
+        skillName: null,
+        skillVersion: null,
+        skillDescription: null,
+        skillApiKey: null,
+        skillInstalledAt: null,
+      },
+    });
+    return res.json({ hasSkill: false, hasKey: false });
+  } catch (err) {
+    log.error('delete skill failed', {
       err: err instanceof Error ? err.message : String(err),
     });
     return res.status(500).json({ error: 'internal error' });

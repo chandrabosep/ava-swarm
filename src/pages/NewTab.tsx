@@ -4,7 +4,7 @@ import { AllocationChart } from '@/components/portfolio/AllocationChart';
 import { AgentStatusPanel } from '@/components/agents/AgentStatusPanel';
 import { SmartAccountCard } from '@/components/swarm/SmartAccountCard';
 import { RiskProfileCard } from '@/components/swarm/RiskProfileCard';
-import { HermesSettingsCard } from '@/components/swarm/HermesSettingsCard';
+import { SkillConnectorCard } from '@/components/swarm/SkillConnectorCard';
 
 export default function NewTab() {
   return (
@@ -23,7 +23,7 @@ export default function NewTab() {
 
         <SmartAccountCard />
         <RiskProfileCard />
-        <HermesSettingsCard />
+        <SkillConnectorCard />
         <AgentStatusPanel />
       </main>
       <RightRail />

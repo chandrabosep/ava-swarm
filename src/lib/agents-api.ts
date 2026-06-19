@@ -76,55 +76,70 @@ export async function setCustomConfig(
   }
 }
 
-/** What the GET /api/settings/hermes endpoint returns. */
-export interface HermesSettings {
-  enabled: boolean;
-  /** Server only confirms presence — never returns the full key. */
+// =====================================================================
+// Skill connector
+// =====================================================================
+//
+// Hermes-Agent style: the swarm stores one installed skill (markdown
+// describing some service's API) plus the API key for that service.
+// The full content + key never come back to the UI — only metadata
+// (parsed name/version/description) and `keyTail`.
+
+export interface SkillState {
+  hasSkill: boolean;
   hasKey: boolean;
-  /** Last 4 chars of the saved key, for "is this the one I pasted?" recognition. */
   keyTail: string | null;
-  model: string | null;
-  baseUrl: string | null;
-  skill: string | null;
+  name: string | null;
+  version: string | null;
+  description: string | null;
+  contentLength: number;
+  installedAt: string | null;
   updatedAt: string | null;
 }
 
-export async function getHermesSettings(): Promise<HermesSettings> {
-  const res = await fetch(`${AGENTS_API_URL}/api/settings/hermes`);
+export async function getSkill(): Promise<SkillState> {
+  const res = await fetch(`${AGENTS_API_URL}/api/skill`);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`getHermesSettings ${res.status}: ${text || res.statusText}`);
+    throw new Error(`getSkill ${res.status}: ${text || res.statusText}`);
   }
-  return (await res.json()) as HermesSettings;
+  return (await res.json()) as SkillState;
 }
 
 /**
- * Update Hermes settings. Field semantics:
- *   - omitted / undefined → leave existing value alone
- *   - explicit `null`     → clear the stored value
- *   - string              → overwrite
- *   - `clearKey: true`    → wipe the API key (alias for `apiKey: null`)
+ * Patch the installed skill. Field semantics:
+ *   undefined → leave alone, null → clear, string → overwrite.
+ *   `clearKey: true` is an alias for `apiKey: null`.
+ *
+ * Pasting `content` triggers a server-side YAML-frontmatter parse so the
+ * UI's "installed: <name> v<version>" line stays in sync without the
+ * client needing to re-parse.
  */
-export interface HermesSettingsPatch {
-  enabled?: boolean;
+export interface SkillPatch {
+  content?: string | null;
   apiKey?: string | null;
-  model?: string | null;
-  baseUrl?: string | null;
-  skill?: string | null;
   clearKey?: boolean;
 }
 
-export async function setHermesSettings(
-  patch: HermesSettingsPatch,
-): Promise<HermesSettings> {
-  const res = await fetch(`${AGENTS_API_URL}/api/settings/hermes`, {
+export async function setSkill(patch: SkillPatch): Promise<SkillState> {
+  const res = await fetch(`${AGENTS_API_URL}/api/skill`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
+  const data = (await res.json().catch(() => ({}))) as
+    | SkillState
+    | { error?: string };
+  if (!res.ok) {
+    throw new Error((data as { error?: string }).error ?? `setSkill ${res.status}`);
+  }
+  return data as SkillState;
+}
+
+export async function clearSkill(): Promise<void> {
+  const res = await fetch(`${AGENTS_API_URL}/api/skill`, { method: 'DELETE' });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`setHermesSettings ${res.status}: ${text || res.statusText}`);
+    throw new Error(`clearSkill ${res.status}: ${text || res.statusText}`);
   }
-  return (await res.json()) as HermesSettings;
 }

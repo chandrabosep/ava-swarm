@@ -18,7 +18,7 @@
 
 import OpenAI from 'openai';
 
-import { db, env, type AllocationIntent } from '@swarm/shared';
+import { env, type AllocationIntent } from '@swarm/shared';
 import type { PortfolioSnapshot } from './portfolio.js';
 import { profileFor, type RiskProfile } from './profiles.js';
 
@@ -36,69 +36,27 @@ export interface DecideParams {
 }
 
 /**
- * Resolve which model client + system-prompt extension to use for THIS tick.
- *
- * Precedence (highest first):
- *   1. SwarmSettings row in Postgres with hermesEnabled=true and an
- *      hermesApiKey on file. This is what the extension's Hermes settings
- *      panel writes — paste a key in the UI and you're using Hermes
- *      without restarting PM.
- *   2. LLM_PROVIDER=hermes env var (still works for ops/CI deploys that
- *      set everything via env).
- *   3. Groq defaults.
- *
- * Returns the resolved client config plus an optional `skillSuffix` —
- * the free-form text the user pasted in the UI, appended to the system
- * prompt so the model has their custom guidance.
+ * Resolve which OpenAI-compatible model endpoint PM uses this tick.
+ * Env-only — `LLM_PROVIDER=hermes` switches to a Hermes / Nous Portal
+ * endpoint configured by HERMES_API_KEY / HERMES_BASE_URL / HERMES_MODEL.
+ * Default is Groq.
  */
-export async function resolveLlm(): Promise<{
+function resolveLlm(): {
   apiKey: string;
   baseURL: string;
   model: string;
-  provider: 'groq' | 'hermes';
-  skillSuffix: string | null;
-}> {
-  // DB read is best-effort — if the table doesn't exist yet (pre-migration)
-  // or Postgres is having a bad day we fall back to env so PM stays alive.
-  let row: {
-    hermesEnabled: boolean;
-    hermesApiKey: string | null;
-    hermesModel: string | null;
-    hermesBaseUrl: string | null;
-    hermesSkill: string | null;
-  } | null = null;
-  try {
-    row = await db().swarmSettings.findUnique({ where: { id: 'global' } });
-  } catch {
-    row = null;
-  }
-
-  if (row?.hermesEnabled && row.hermesApiKey) {
-    return {
-      apiKey: row.hermesApiKey,
-      baseURL: row.hermesBaseUrl ?? env.hermesBaseUrl(),
-      model: row.hermesModel ?? env.hermesModel(),
-      provider: 'hermes',
-      skillSuffix: row.hermesSkill ?? null,
-    };
-  }
-
+} {
   if (env.llmProvider() === 'hermes') {
     return {
       apiKey: env.hermesApiKey(),
       baseURL: env.hermesBaseUrl(),
       model: env.hermesModel(),
-      provider: 'hermes',
-      skillSuffix: null,
     };
   }
-
   return {
     apiKey: env.groqApiKey(),
     baseURL: env.groqBaseUrl(),
     model: env.groqModel(),
-    provider: 'groq',
-    skillSuffix: null,
   };
 }
 
@@ -135,14 +93,11 @@ Rules:
 export async function decideAllocation(
   params: DecideParams,
 ): Promise<AllocationIntent> {
-  const llm = await resolveLlm();
+  const llm = resolveLlm();
   const client = new OpenAI({ apiKey: llm.apiKey, baseURL: llm.baseURL });
 
   const userPrompt = buildUserPrompt(params);
-  const baseSystem = buildSystemPrompt(params.riskProfile ?? 'balanced');
-  const system = llm.skillSuffix
-    ? `${baseSystem}\n\nAdditional user-provided guidance (Hermes skill):\n${llm.skillSuffix}`
-    : baseSystem;
+  const system = buildSystemPrompt(params.riskProfile ?? 'balanced');
 
   const res = await client.chat.completions.create({
     model: llm.model,
