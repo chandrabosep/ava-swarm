@@ -772,6 +772,162 @@ app.post('/api/hermes/test', async (_req, res) => {
 });
 
 
+// =====================================================================
+// Internal endpoints — called by KeeperHub scheduled workflows
+// =====================================================================
+//
+// Auth: shared secret in `x-internal-key` header. Set SWARM_INTERNAL_KEY
+// in agents/.env and reference the same value in the KH workflow JSON.
+// Falls open when the env var is unset (dev mode) so contributors can
+// poke endpoints without ceremony.
+
+const INTERNAL_KEY = process.env.SWARM_INTERNAL_KEY ?? '';
+
+function requireInternal(
+  req: express.Request,
+  res: express.Response,
+): boolean {
+  if (!INTERNAL_KEY) return true; // dev mode, fail open
+  if (req.header('x-internal-key') === INTERNAL_KEY) return true;
+  res.status(401).json({ error: 'unauthorized' });
+  return false;
+}
+
+/** PM tick — called by `swarm.scheduled-tick` every 5 min and by
+ *  `swarm.risk-change-apply` on profile change. Body may include a
+ *  `walletAddress` to scope to one user; otherwise ticks all active
+ *  sessions. The actual tick happens inside the PM process —
+ *  this endpoint just emits an Event row that PM polls. */
+app.post('/internal/tick', async (req, res) => {
+  if (!requireInternal(req, res)) return;
+  const body = (req.body ?? {}) as {
+    source?: string;
+    walletAddress?: string;
+  };
+  try {
+    await db().event.create({
+      data: {
+        // Per-wallet tick request → row keyed to that wallet. Global
+        // tick request (no wallet) → keyed to a synthetic system row
+        // so PM's poller picks it up regardless.
+        walletAddress: body.walletAddress ?? '0x0000000000000000000000000000000000000000',
+        agent: 'pm',
+        kind: 'kh.tick-request',
+        payload: {
+          source: body.source ?? 'kh',
+          requestedAt: new Date().toISOString(),
+        },
+      },
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    log.error('internal tick failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'tick failed' });
+  }
+});
+
+/** ALM position scan — called by `swarm.alm-position-check` every 15 min. */
+app.post('/internal/alm/scan-positions', async (req, res) => {
+  if (!requireInternal(req, res)) return;
+  try {
+    await db().event.create({
+      data: {
+        walletAddress: '0x0000000000000000000000000000000000000000',
+        agent: 'alm',
+        kind: 'kh.scan-request',
+        payload: { source: 'kh.alm-position-check' },
+      },
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    log.error('internal alm scan failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'scan failed' });
+  }
+});
+
+/** Daily report — called by `swarm.treasury-report` at 00:00 UTC.
+ *  Returns the digest as JSON; the workflow's next step posts it to
+ *  the user's configured delivery webhook (Telegram, email). */
+app.post('/internal/report/daily', async (req, res) => {
+  if (!requireInternal(req, res)) return;
+  const body = (req.body ?? {}) as { windowHours?: number };
+  const windowHours = body.windowHours ?? 24;
+  const cutoff = new Date(Date.now() - windowHours * 3600 * 1000);
+
+  try {
+    const intents = await db().intent.findMany({
+      where: { createdAt: { gte: cutoff } },
+      select: {
+        walletAddress: true,
+        fromAgent: true,
+        status: true,
+        payload: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    // Aggregate per-wallet stats so the report has a per-user section.
+    const byWallet = new Map<
+      string,
+      {
+        totalIntents: number;
+        executed: number;
+        failed: number;
+        otcMatched: number;
+        otcSavedUsd: number;
+        notionalUsd: number;
+      }
+    >();
+    for (const i of intents) {
+      const key = i.walletAddress;
+      const cur = byWallet.get(key) ?? {
+        totalIntents: 0,
+        executed: 0,
+        failed: 0,
+        otcMatched: 0,
+        otcSavedUsd: 0,
+        notionalUsd: 0,
+      };
+      cur.totalIntents += 1;
+      if (i.status === 'executed') cur.executed += 1;
+      if (i.status === 'failed') cur.failed += 1;
+      const p = (i.payload as Record<string, unknown> | null) ?? {};
+      if (p.venue === 'otc-mesh') {
+        cur.otcMatched += 1;
+        const otc = p.otc as { savedUsd?: number } | undefined;
+        cur.otcSavedUsd += otc?.savedUsd ?? 0;
+      }
+      if (typeof p.notionalUsd === 'number') {
+        cur.notionalUsd += p.notionalUsd;
+      }
+      byWallet.set(key, cur);
+    }
+
+    return res.json({
+      ok: true,
+      windowHours,
+      generatedAt: new Date().toISOString(),
+      totals: {
+        intents: intents.length,
+        wallets: byWallet.size,
+      },
+      perWallet: Array.from(byWallet.entries()).map(([wallet, stats]) => ({
+        walletAddress: wallet,
+        ...stats,
+      })),
+    });
+  } catch (err) {
+    log.error('internal daily report failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'report failed' });
+  }
+});
+
 app.listen(PORT, () => {
   log.info('api up', { port: PORT, allowedOrigins: ALLOWED_ORIGINS });
 });

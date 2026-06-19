@@ -1,0 +1,29 @@
+{
+  "name": "swarm.risk-change-apply",
+  "description": "Fires an immediate PM tick when a user changes their risk profile, instead of waiting for the next cadence-driven tick. The agents API webhook posts the wallet address; we ping the internal tick endpoint scoped to that wallet.",
+  "trigger": {
+    "type": "webhook",
+    "method": "POST",
+    "path": "/swarm/risk-change"
+  },
+  "steps": [
+    {
+      "id": "tick-user",
+      "type": "webhook",
+      "method": "POST",
+      "url": "${AGENTS_API_URL}/internal/tick",
+      "headers": {
+        "x-internal-key": "${SWARM_INTERNAL_KEY}"
+      },
+      "body": {
+        "source": "kh.risk-change-apply",
+        "walletAddress": "${trigger.body.walletAddress}",
+        "ts": "${now}"
+      },
+      "retry": {
+        "maxAttempts": 5,
+        "backoffSeconds": 10
+      }
+    }
+  ]
+}

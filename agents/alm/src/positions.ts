@@ -16,18 +16,30 @@ import {
   type Hex,
   type PublicClient,
 } from 'viem';
-import { mainnet, base, unichain } from 'viem/chains';
+import { mainnet, base, unichain, sepolia, baseSepolia } from 'viem/chains';
 
 import { env } from '@swarm/shared';
 import type { SupportedChain } from '@swarm/shared';
 
-const VIEM_CHAIN = { mainnet, base, unichain } as const;
+const VIEM_CHAIN = {
+  mainnet,
+  base,
+  unichain,
+  sepolia,
+  'base-sepolia': baseSepolia,
+} as const satisfies Record<SupportedChain, unknown>;
 
 // Uniswap v4 PositionManager addresses (from docs.uniswap.org/contracts/v4/deployments).
+// Testnet entries use the official Sepolia v4 deployments where they exist;
+// 0x0 placeholders mean "v4 not deployed on this chain yet" — readPositions
+// will short-circuit for those.
 export const POSITION_MANAGER: Record<SupportedChain, Address> = {
   mainnet: '0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e',
   base: '0x7C5f5A4bBd8fD63184577525326123B519429bDc',
   unichain: '0x4529A01c7A0410167c5740C487A8DE60232617bf',
+  // Uniswap v4 Sepolia PositionManager (per docs.uniswap.org/contracts/v4/deployments).
+  sepolia: '0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4',
+  'base-sepolia': '0x4B2C77d209D3405F41a037Ec6c77F7F5b8e2ca80',
 };
 
 // Minimal ABI — only the bits we read from outside the SDK.
@@ -46,10 +58,13 @@ export interface RawPosition {
 }
 
 export function clientFor(chain: SupportedChain): PublicClient {
+  // Lose the precise return type — viem's exported `PublicClient` is
+  // a different generic instantiation than what `createPublicClient`
+  // returns (TS2719 mismatch). Inferring works fine at the call site.
   return createPublicClient({
     chain: VIEM_CHAIN[chain],
     transport: http(env.rpc(chain)),
-  });
+  }) as unknown as PublicClient;
 }
 
 export async function readPositions(

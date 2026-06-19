@@ -39,6 +39,9 @@ const POOL_MANAGER: Record<SupportedChain, `0x${string}`> = {
   mainnet: '0x000000000004444c5dc75cB358380D2e3dE08A90',
   base: '0x498581fF718922c3f8e6A244956aF099B2652b2b',
   unichain: '0x1F98400000000000000000000000000000000004',
+  // Sepolia v4 PoolManager (per docs.uniswap.org/contracts/v4/deployments).
+  sepolia: '0xE03A1074c86CFeDd5C142C4F04F1a1536e203543',
+  'base-sepolia': '0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408',
 };
 
 /** Trigger rebalance if current tick is within this many ticks of a bound. */

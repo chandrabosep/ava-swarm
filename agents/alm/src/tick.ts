@@ -22,7 +22,13 @@ import { analyzePositions } from './strategy.js';
 
 const TICK_INTERVAL_MS = 60_000;
 
-const CHAINS_TO_SCAN: SupportedChain[] = ['mainnet', 'base', 'unichain'];
+// Which chains ALM scans for v4 LP positions. On testnet, only Sepolia
+// + Base Sepolia have v4 deployments; mainnet entries are skipped under
+// USE_TESTNET=true via env.useTestnet() check below.
+import { env } from '@swarm/shared';
+const CHAINS_TO_SCAN: SupportedChain[] = env.useTestnet()
+  ? ['sepolia', 'base-sepolia']
+  : ['mainnet', 'base', 'unichain'];
 
 export function startTick(ctx: AgentContext): () => void {
   let stopped = false;

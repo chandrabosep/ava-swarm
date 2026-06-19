@@ -35,8 +35,15 @@ export const env = {
   // (see PM_SERVICE_PRIVKEY etc. and src/keys.ts).
 
   // Onchain RPCs
-  rpc: (chain: 'mainnet' | 'base' | 'unichain'): string =>
-    required(`RPC_${chain.toUpperCase()}`),
+  rpc: (
+    chain:
+      | 'mainnet'
+      | 'base'
+      | 'unichain'
+      | 'sepolia'
+      | 'base-sepolia',
+  ): string =>
+    required(`RPC_${chain.toUpperCase().replace(/-/g, '_')}`),
 
   // Sponsor APIs
   keeperhubApiKey: () => required('KEEPERHUB_API_KEY'),

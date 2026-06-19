@@ -1,0 +1,28 @@
+{
+  "name": "swarm.scheduled-tick",
+  "description": "Cron-driven PM tick. Hits the agents API to advance PM cadence for every active session every 5 minutes. Replaces in-process setInterval so PM ticks survive restarts.",
+  "trigger": {
+    "type": "cron",
+    "schedule": "*/5 * * * *",
+    "timezone": "UTC"
+  },
+  "steps": [
+    {
+      "id": "tick",
+      "type": "webhook",
+      "method": "POST",
+      "url": "${AGENTS_API_URL}/internal/tick",
+      "headers": {
+        "x-internal-key": "${SWARM_INTERNAL_KEY}"
+      },
+      "body": {
+        "source": "kh.scheduled-tick",
+        "ts": "${now}"
+      },
+      "retry": {
+        "maxAttempts": 3,
+        "backoffSeconds": 30
+      }
+    }
+  ]
+}
