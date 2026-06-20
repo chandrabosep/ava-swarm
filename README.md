@@ -1,181 +1,221 @@
-# Ava Swarm — New Tab Extension
+<div align="center">
 
-A Chrome extension that overrides the new-tab page with a daily.dev-style **DeFi
-dashboard**, backed by a 4-agent swarm (Portfolio Manager, ALM, Intent Router,
-Swap Executor).
+# 🌐 Ava Swarm
+
+### Agents that hire agents — a self-organizing DeFi swarm in your new tab.
+
+A Chrome new-tab page that replaces the blank slate with a live **DeFi command center**, powered by a four-agent swarm that **discovers, pays, and rates each other autonomously** on Avalanche — combining **[x402](https://x402.org) micropayments** with **[ERC-8004](https://eips.ethereum.org/) on-chain agent reputation**.
+
+</div>
 
 ---
 
-## 🏁 Speedrun: Agentic Payments (Avalanche)
+## ✨ The big idea
 
-**This build pivots the swarm onto Avalanche Fuji for the *Agentic Payments*
-Speedrun — "agents that hire agents," combining x402 + ERC-8004.**
+Most "AI agent" demos are one model in a loop. **Ava Swarm is a market.**
 
-The lead agent (PM) splits a job into sub-tasks, ranks specialist agents by
-their **ERC-8004 reputation**, **pays each one per task via x402** (USDC on
-Fuji, gasless, no human in the loop), then writes **ERC-8004 feedback** that
-changes who ranks highest next round.
+A lead **Portfolio Manager (PM)** agent breaks a job into sub-tasks, then goes shopping: it ranks specialist agents by their **on-chain reputation**, **pays the best ones per task in USDC** (gasless, no human in the loop), grades the work they return, and writes that grade **back on-chain** — which reshuffles who gets hired next round.
 
-### Delta — what existed before vs. what's new for this Speedrun
+No API keys. No logins. No trust assumptions. Just **payments and reputation, settled on Avalanche.**
 
-| Already built (pre-Speedrun) | New for this Speedrun |
-|---|---|
-| 4-agent swarm + LLM PM loop + AXL/Postgres plumbing | ERC-8004 `IdentityRegistry` + `ReputationRegistry` (`contracts/src/erc8004/`), deployed to Fuji |
-| React new-tab dashboard shell | `@swarm/marketplace` — x402-gated specialist endpoints (`/quote-route`, `/risk-check`, `/price`) |
-| Uniswap-v4 / KeeperHub execution on Ethereum L2s | PM **buyer loop** (`agents/pm/src/hire.ts`): reputation-ranked hiring, x402 USDC payment, ERC-8004 feedback |
-| Chains: Unichain / Base / Mainnet | Repointed end-to-end to **Avalanche Fuji** (43113); on-chain agent identity at boot; reputation + live-payment dashboard panel |
+```
+        ┌─────────────────────────────────────────────────────────────┐
+        │  PM ranks specialists by ERC-8004 reputation                 │
+        │            │                                                 │
+        │            ▼                                                 │
+        │  PM pays the top picks per task via x402  ──►  USDC on Fuji  │
+        │            │                                                 │
+        │            ▼                                                 │
+        │  Specialist does the work, returns a result                 │
+        │            │                                                 │
+        │            ▼                                                 │
+        │  PM scores it 0–100 and writes ERC-8004 feedback ───┐        │
+        │            │                                        │        │
+        │            └──── changes next round's ranking ◄─────┘        │
+        └─────────────────────────────────────────────────────────────┘
+```
 
-The pre-Speedrun Uniswap/KeeperHub/Zerion tick loops still exist but idle on
-Fuji (no user sessions) — the active demo path is x402 + ERC-8004.
+Every payment and every rating is a real on-chain transaction with a **[Snowtrace](https://testnet.snowtrace.io)** link in the dashboard.
 
-### Run the demo
+---
+
+## 🛒 The marketplace
+
+Three of the swarm's four agents become **sellers**, each exposing a single x402-gated endpoint that settles to **its own wallet**. The PM is the **buyer**.
+
+| Specialist | Role | Endpoint | Price | Sells |
+|---|---|---|---|---|
+| 🧭 **Route Analyst** | `router` | `POST /quote-route` | `$0.01` | Best-route + quote analysis for a swap |
+| 🛡️ **Risk Checker** | `executor` | `POST /risk-check` | `$0.01` | Pre-trade risk assessment for a token + size |
+| 📊 **Data Oracle** | `alm` | `POST /price` | `$0.005` | Token price + sentiment snapshot |
+
+How a single hire works:
+
+```
+PM ──POST /quote-route──────────────►  Marketplace
+   ◄──402 Payment Required────────────  (price, network, payTo)
+PM ──signs USDC authorization──────►   Facilitator settles on Fuji
+   ◄──200 OK + result + tx hash──────  handler runs only after payment clears
+PM ──giveFeedback(agentId, score)──►   ReputationRegistry (on-chain)
+```
+
+> The work each specialist sells is intentionally lightweight and deterministic — per the Speedrun's "start small" guidance, the value on display is the **autonomous payment + reputation loop**, not analytics fidelity.
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart TB
+    subgraph chrome["Chrome Extension - new tab"]
+        UI["React dashboard<br/>Reown AppKit wallet"]
+    end
+
+    subgraph swarm["Agent Swarm - Node workspaces"]
+        PM["PM - buyer<br/>Claude LLM loop"]
+        MKT["Marketplace<br/>x402 paywalls"]
+        ROUTER["Router - Route Analyst"]
+        EXEC["Executor - Risk Checker"]
+        ALM["ALM - Data Oracle"]
+    end
+
+    subgraph chain["Avalanche Fuji"]
+        ID["ERC-8004<br/>IdentityRegistry"]
+        REP["ERC-8004<br/>ReputationRegistry"]
+        USDC["USDC + x402<br/>Facilitator"]
+    end
+
+    DB[(PostgreSQL<br/>Supabase)]
+
+    UI -->|reads events| DB
+    PM -->|hire + pay| MKT
+    MKT --- ROUTER & EXEC & ALM
+    PM -->|rank by reputation| REP
+    PM -->|write feedback| REP
+    PM -->|pay per task| USDC
+    ROUTER & EXEC & ALM -->|register identity at boot| ID
+    PM & ROUTER & EXEC & ALM -->|state + events| DB
+```
+
+Each agent runs as its **own OS process** (`tsx`), holds a fixed service keypair, and persists its slice of state to shared Postgres via Prisma. The dashboard reads those events to render reputation scores, live payments, and settlement links.
+
+---
+
+## 🚀 Quickstart
+
+> **Prerequisites:** Node 20+ (22 tested), a [Foundry](https://book.getfoundry.sh) toolchain, a Supabase project, a [Reown](https://cloud.reown.com) project ID, and a Fuji wallet funded with test-USDC + a little AVAX from the [Avalanche faucet](https://faucet.avax.network).
+
+### 1 — Deploy the ERC-8004 registries to Fuji
 
 ```sh
-# 1. Deploy the ERC-8004 registries to Fuji
-cd contracts && forge test                       # registries pass unit tests
+cd contracts
+forge test                                        # registries pass unit tests
 forge script script/DeployErc8004.s.sol:DeployErc8004 \
   --rpc-url avalanche-fuji --broadcast --private-key $DEPLOYER_PRIVKEY
 # paste the two logged addresses into agents/.env (ERC8004_*_ADDRESS)
-
-# 2. Configure + fund (see agents/.env.example)
-#    - USE_TESTNET=true, ERC8004_* addresses, X402_FACILITATOR_URL
-#    - fund the PM (buyer) wallet with Fuji test-USDC + a little AVAX
-#      from https://faucet.avax.network
-
-# 3. Boot everything: agents register ERC-8004 identities, marketplace
-#    serves x402 paywalls, PM starts hiring.
-cd agents && npm install && npm run dev:all
-
-# 4. Watch the dashboard's "Agent Marketplace" panel: reputation scores,
-#    live x402 payments, and Snowtrace links to every settlement.
-npm run dev   # extension dev server (repo root)
 ```
 
-See [the agents README](agents/README.md) for the full backend layout.
+### 2 — Boot the swarm
+
+```sh
+cd agents
+cp .env.example .env            # set USE_TESTNET=true, ERC8004_* addrs, X402_FACILITATOR_URL,
+                                # Supabase URLs, and the 4 service privkeys
+npm install
+npm run prisma:generate && npm run prisma:migrate
+npm run dev:all                 # api · pm · alm · router · executor · marketplace
+```
+
+On boot: specialists register ERC-8004 identities, the marketplace serves x402 paywalls, and the PM starts hiring.
+
+### 3 — Run the dashboard
+
+```sh
+cp .env.example .env            # paste your VITE_REOWN_PROJECT_ID
+npm install --legacy-peer-deps  # see note below
+npm run dev                     # http://localhost:5173
+```
+
+Open the **Agent Marketplace** panel and watch reputation scores climb, payments stream in, and Snowtrace links appear for every settlement.
+
+> **Why `--legacy-peer-deps`?** `@reown/appkit-adapter-wagmi` pulls a transitive package whose peer-dep graph trips npm's strict resolver. The flag is harmless — every version is pinned in `package.json`.
+
+### Load as a real Chrome extension
+
+```sh
+npm run build                   # → self-contained unpacked extension in dist/
+```
+
+1. Open `chrome://extensions` → enable **Developer mode**
+2. **Load unpacked** → select `dist/`
+3. Open a new tab → the dashboard renders → click **Connect** for the Reown modal
 
 ---
 
-> **Scope right now**: extension shell + Reown AppKit wallet connect. No agent
-> runtime, no Uniswap, no KeeperHub, no real data feeds. Agent cards, portfolio
-> numbers, intents log, and news items are **mock placeholders** so the layout
-> is ready for wiring in later phases.
+## 🧩 Tech & sponsor map
 
-## Stack
+| Layer | What we use |
+|---|---|
+| **Agentic payments** | [x402](https://x402.org) — `x402-express` paywalls, `x402-fetch` buyer, hosted facilitator settling USDC on Fuji |
+| **Agent identity & trust** | [ERC-8004](https://eips.ethereum.org/) `IdentityRegistry` + `ReputationRegistry`, deployed via Foundry |
+| **Chain** | Avalanche Fuji (43113) · USDC · Snowtrace |
+| **Frontend** | Vite · React 18 · TypeScript · TailwindCSS · Reown AppKit · Wagmi · viem · React Query · `@crxjs/vite-plugin` (MV3) |
+| **Backend** | Node + `tsx` · npm workspaces · Prisma + PostgreSQL (Supabase) · Express |
+| **Inter-agent comms** | Gensyn AXL pub/sub |
+| **Execution (legacy path)** | Uniswap Trading API + v4 SDK · KeeperHub — present but idle on Fuji; the active path is x402 + ERC-8004 |
 
-- Vite + React + TypeScript
-- Manifest V3 (`chrome_url_overrides.newtab` → `index.html`)
-- TailwindCSS, dark theme (Linear/Vercel-leaning)
-- Reown AppKit + Wagmi adapter, viem, `@tanstack/react-query`
-- `@crxjs/vite-plugin` for manifest + dev HMR
+---
 
-## Prerequisites
-
-- Node 20+ (Node 22 tested)
-- A Reown AppKit project ID — free at <https://cloud.reown.com>
-
-## Setup
-
-```sh
-cp .env.example .env
-# edit .env and paste your Reown project id
-npm install --legacy-peer-deps
-```
-
-> **`--legacy-peer-deps` is required.** `@reown/appkit-adapter-wagmi` pulls
-> a transitive `accounts` package whose peer-dep graph trips npm's strict
-> resolver. The flag is harmless here — versions are pinned in `package.json`.
-
-## Develop
-
-```sh
-npm run dev
-```
-
-Vite serves the dashboard at <http://localhost:5173>. To preview it as a real
-extension while developing, run `npm run build` and load the `dist/` folder
-(see below) — `@crxjs/vite-plugin` supports HMR for unpacked extensions when
-loaded from `dist/` after a build.
-
-## Build
-
-```sh
-npm run build
-```
-
-This produces a self-contained, unpacked extension at `dist/`.
-
-## Load in Chrome
-
-1. Open `chrome://extensions`
-2. Toggle **Developer mode** on (top-right)
-3. Click **Load unpacked** and select the `dist/` folder
-4. Open a new tab — the dashboard renders
-5. Click the connect button in the header — the Reown AppKit modal opens
-
-To pick up code changes, click **Reload** on the extension card after each
-`npm run build`.
-
-## Project layout
+## 📁 Project structure
 
 ```
-src/
-  config/        # appkit, wagmi, chains
-  components/
-    layout/      # Header, Sidebar, RightRail
-    portfolio/   # SummaryCards, AllocationChart
-    agents/      # AgentCard, AgentStatusPanel
-    news/        # NewsFeed, NewsCard
-    common/      # Button, Surface, Badge
-  hooks/         # useWallet
-  lib/           # format helpers, mock data
-  types/         # Agent, Intent, NewsItem
-  pages/NewTab.tsx
-  App.tsx
-  main.tsx
-public/
-  icons/         # 16 / 48 / 128 placeholder icons
-manifest.config.ts  # @crxjs/vite-plugin manifest source
+defi-swarm-newtab/
+├── src/                     # React new-tab dashboard (the extension UI)
+│   ├── config/              #   appkit · wagmi · chains
+│   ├── components/          #   layout · portfolio · agents · news · common
+│   ├── hooks/ · lib/ · types/
+│   └── pages/NewTab.tsx
+├── manifest.config.ts       # @crxjs MV3 manifest source
+│
+├── agents/                  # the swarm backend (npm workspaces)
+│   ├── shared/              #   @swarm/shared — db, AXL, crypto, chain, specialists, env
+│   ├── pm/                  #   Portfolio Manager — the buyer (hire.ts)
+│   ├── marketplace/         #   x402-gated seller storefront
+│   ├── router/ executor/ alm/   # the three specialist sellers
+│   └── api/                 #   dashboard-facing API
+│
+└── contracts/               # Foundry project
+    └── src/erc8004/         #   IdentityRegistry.sol · ReputationRegistry.sol
+        └── OTCMediator.sol
 ```
 
-## Environment
+---
 
-`.env` (gitignored) — copy from `.env.example`:
+## 📜 Scripts
 
-```
-VITE_REOWN_PROJECT_ID=
-```
+**Extension (repo root)**
 
-If the project id is missing the dashboard still renders, but the wallet modal
-will be unhappy. Watch the browser console for the warning logged by
-`src/config/appkit.ts`.
+| Script | Does |
+|---|---|
+| `npm run dev` | Vite dev server |
+| `npm run build` | Type-check + build unpacked extension to `dist/` |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | ESLint over `src/` |
 
-## Networks
+**Swarm (`agents/`)**
 
-Configured chains: **Avalanche Fuji** (C-Chain testnet, the Speedrun target)
-and **Avalanche** (C-Chain mainnet, optional bonus). The set lives in
-`src/config/chains.ts` and `src/config/appkit.ts`; explorer links
-(`src/lib/explorer.ts`) point at Snowtrace. `USE_TESTNET` (env
-`VITE_USE_TESTNET` / `USE_TESTNET`) flips the whole stack between Fuji and
-mainnet.
+| Script | Does |
+|---|---|
+| `npm run dev:all` | All six services with colored, named logs |
+| `npm run dev:pm` / `dev:marketplace` / … | A single service |
+| `npm run prisma:migrate` | Apply schema to Supabase |
 
-## Scripts
+---
 
-| Script              | What                          |
-| ------------------- | ----------------------------- |
-| `npm run dev`       | Vite dev server               |
-| `npm run build`     | Type-check + build to `dist/` |
-| `npm run typecheck` | `tsc --noEmit`                |
-| `npm run lint`      | ESLint over `src/`            |
-| `npm run preview`   | Preview the production build  |
+<div align="center">
 
-## Out of scope (intentionally — coming in later phases)
+**Built for the Agentic Payments Speedrun** · Avalanche Fuji · x402 × ERC-8004
 
-- AI agent logic, runtime, or orchestration
-- Gensyn AXL nodes, P2P comms, MCP, A2A messaging
-- Uniswap v3/v4, Universal Router, Permit2 integration
-- KeeperHub integration
-- Real news feed (RSS / API)
-- Real portfolio data
-- Intent netting / routing logic
+*Agents discover. Agents pay. Agents rate. No humans required.*
 
-The shell exists so those layers can drop in cleanly.
+</div>
