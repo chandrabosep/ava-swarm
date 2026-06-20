@@ -165,25 +165,6 @@ model AgentState {
   @@map("agent_state")
 }
 
-/// Global swarm-wide settings. Single-row table keyed by id='global'.
-///
-/// Legacy: held a single installed skill (skill_*). Superseded by the
-/// per-agent-role `Skill` table below. Columns kept for backward-compat
-/// during the transition; nothing in the codebase reads them anymore.
-/// Drop in a follow-up migration once the new skills flow has soaked.
-model SwarmSettings {
-  id               String    @id @default("global")
-  skillName        String?   @map("skill_name")
-  skillVersion     String?   @map("skill_version")
-  skillDescription String?   @map("skill_description")
-  skillContent     String?   @map("skill_content")
-  skillApiKey      String?   @map("skill_api_key")
-  skillInstalledAt DateTime? @map("skill_installed_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
-
-  @@map("swarm_settings")
-}
-
 /// Per-agent installed skill. Modeled after SwarmProtocol's
 /// `.skill-lock.json` (sourceUrl + contentHash for drift detection) +
 /// the moltbook self-register flow (apiKey + claimUrl + verificationCode

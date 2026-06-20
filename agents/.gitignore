@@ -12,3 +12,4 @@ shared/prisma/migrations/.tmp/
 # CLI link state (Vercel, Railway)
 .vercel
 .railway
+.env.railway

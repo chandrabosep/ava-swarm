@@ -1,0 +1,32 @@
+# Don't ship build artefacts, local logs, secrets, or transient state
+# into the Railway image. Keep the layer slim.
+
+# Local logs from dev:all:logged
+logs/
+
+# Local AXL state (key + config)
+axl-node/logs/
+axl-node/nodes/*/private.pem
+axl-node/nodes/*/node-config.json
+
+# Compiled outputs — Dockerfile rebuilds them inside the image
+**/dist/
+**/*.tsbuildinfo
+
+# Node modules — installed inside the image
+node_modules/
+*/node_modules/
+
+# Env files — secrets come from Railway env, not the image
+.env
+.env.local
+.env.production
+
+# Git metadata
+.git/
+.gitignore
+
+# Editor/IDE noise
+.vscode/
+.idea/
+.DS_Store
