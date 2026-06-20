@@ -1,6 +1,6 @@
 import { createAppKit } from '@reown/appkit/react';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
-import { sepolia, baseSepolia, unichainSepolia } from '@reown/appkit/networks';
+import { avalanche, avalancheFuji } from '@reown/appkit/networks';
 import type { AppKitNetwork } from '@reown/appkit/networks';
 
 // Reown AppKit + Wagmi setup.
@@ -17,10 +17,11 @@ if (!projectId) {
   );
 }
 
+// Fuji first — it's the Speedrun: Agentic Payments target chain. Avalanche
+// C-Chain mainnet is offered for the optional bonus deploy.
 export const networks: [AppKitNetwork, ...AppKitNetwork[]] = [
-  unichainSepolia,
-  baseSepolia,
-  sepolia,
+  avalancheFuji,
+  avalanche,
 ];
 
 export const wagmiAdapter = new WagmiAdapter({
@@ -47,8 +48,8 @@ createAppKit({
   networks,
   projectId: projectId ?? 'missing-project-id',
   metadata: {
-    name: 'DeFi Swarm',
-    description: 'New-tab dashboard for the DeFi agent swarm.',
+    name: 'Ava Swarm',
+    description: 'New-tab dashboard for the Ava agent swarm.',
     url: APP_URL,
     icons: [APP_ICON],
   },

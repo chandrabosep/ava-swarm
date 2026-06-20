@@ -2,11 +2,9 @@ import { RightRail } from '@/components/layout/RightRail';
 import { SummaryCards } from '@/components/portfolio/SummaryCards';
 import { AllocationChart } from '@/components/portfolio/AllocationChart';
 import { AgentStatusPanel } from '@/components/agents/AgentStatusPanel';
+import { AgentMarketplacePanel } from '@/components/swarm/AgentMarketplacePanel';
 import { SmartAccountCard } from '@/components/swarm/SmartAccountCard';
 import { RiskProfileCard } from '@/components/swarm/RiskProfileCard';
-import { SkillConnectorCard } from '@/components/swarm/SkillConnectorCard';
-import { HermesTestCard } from '@/components/swarm/HermesTestCard';
-import { AxlTelemetryCard } from '@/components/swarm/AxlTelemetryCard';
 
 export default function NewTab() {
   return (
@@ -16,10 +14,7 @@ export default function NewTab() {
     // double-scrollbar effect where the rail and the document fought
     // each other.
     <div className="h-screen text-fg flex flex-col relative overflow-hidden">
-      {/* Page-wide CRT scanline overlay — fixed, non-interactive. */}
-      <div className="hud-scanline" />
-
-      {/* HUD command bar */}
+      {/* Command bar */}
       <CommandBar />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -27,7 +22,7 @@ export default function NewTab() {
           <section>
             <SectionHeader
               title="Portfolio"
-              subtitle="Snapshot view · live data lands when the agent runtime is wired up."
+              subtitle="Live treasury snapshot · Avalanche Fuji · autonomous swarm active"
             />
             <div className="mt-4 space-y-4">
               <SummaryCards />
@@ -37,10 +32,8 @@ export default function NewTab() {
 
           <SmartAccountCard />
           <RiskProfileCard />
-          <AxlTelemetryCard />
           <AgentStatusPanel />
-          <SkillConnectorCard />
-          <HermesTestCard />
+          <AgentMarketplacePanel />
         </main>
         <RightRail />
       </div>
@@ -77,30 +70,30 @@ function CommandBar() {
           <span
             aria-hidden
             className="absolute inset-0 rounded-sm border border-accent/60
-              shadow-[0_0_12px_-2px_rgba(0,229,255,0.6)]"
+              shadow-[0_0_12px_-2px_rgba(232,65,66,0.6)]"
             style={{
               clipPath:
                 'polygon(20% 0, 100% 0, 100% 80%, 80% 100%, 0 100%, 0 20%)',
             }}
           />
           <span className="font-display font-bold text-accent text-sm">
-            DS
+            AS
           </span>
         </div>
         <div className="flex flex-col leading-tight">
-          <span className="hud-logo text-base animate-flicker">
-            DeFi · Swarm
+          <span className="hud-logo text-accent text-base">
+            Ava · Swarm
           </span>
           <span className="text-[10px] tracking-hud uppercase text-fg-subtle font-sans">
-            Autonomous Treasury HUD · v0.1
+            Autonomous Treasury · Avalanche
           </span>
         </div>
       </div>
 
       <div className="hidden md:flex items-center gap-6 text-[10px] uppercase tracking-hud font-sans text-fg-subtle">
         <StatusPip label="Link" tone="ok" value="online" />
-        <StatusPip label="Net" tone="ok" value="Testnet" />
-        <StatusPip label="Sec" tone="ok" value="EIP-7702" />
+        <StatusPip label="Net" tone="ok" value="Avalanche Fuji" />
+        <StatusPip label="Pay" tone="ok" value="x402 · ERC-8004" />
       </div>
     </header>
   );

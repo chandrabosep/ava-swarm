@@ -3,9 +3,9 @@ import pkg from './package.json' with { type: 'json' };
 
 export default defineManifest({
   manifest_version: 3,
-  name: 'DeFi Swarm — New Tab',
+  name: 'Ava Swarm — New Tab',
   description:
-    'New-tab dashboard for the DeFi agent swarm: portfolio, agents, intents.',
+    'New-tab dashboard for the Ava agent swarm: portfolio, agents, x402 payments.',
   version: pkg.version,
   // Override Chrome's new tab page with our dashboard.
   chrome_url_overrides: {
@@ -54,7 +54,7 @@ export default defineManifest({
     128: 'icons/icon-128.png',
   },
   action: {
-    default_title: 'DeFi Swarm',
+    default_title: 'Ava Swarm',
     default_icon: {
       16: 'icons/icon-16.png',
       48: 'icons/icon-48.png',
