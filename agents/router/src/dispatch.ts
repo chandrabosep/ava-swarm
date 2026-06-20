@@ -16,7 +16,7 @@ import {
 import type { PairSwap } from './decompose.js';
 import { TOKENS } from './tokens.js';
 
-const TESTNET_CHAINS: SupportedChain[] = ['sepolia', 'base-sepolia'];
+const TESTNET_CHAINS: SupportedChain[] = ['sepolia', 'base-sepolia', 'avalanche-fuji'];
 
 /** Build the set of valid token addresses for a given chain. Pseudo-ETH
  *  (0x000…000) is always valid. Anything else must appear in TOKENS for
@@ -28,7 +28,7 @@ function isValidTokenForChain(addr: string, chain: SupportedChain): boolean {
   const chainTokens = TOKENS[chain];
   if (!chainTokens) return false;
   return Object.values(chainTokens).some(
-    (t) => t.toLowerCase() === lower,
+    (t) => t?.toLowerCase() === lower,
   );
 }
 

@@ -5,44 +5,42 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Cyberpunk HUD palette — deep navy canvas with neon cyan/magenta
-        // accents. Token names mirror the original Linear/Vercel scheme so
+        // Avalanche-style palette — near-black canvas, Avalanche red accent,
+        // clean neutral grays. Token names mirror the original scheme so
         // every existing component picks up the new look automatically.
         bg: {
-          DEFAULT: '#040714',
-          raised: '#0a0f24',
-          surface: '#0d1530',
-          hover: '#162042',
+          DEFAULT: '#050505',
+          raised: '#0E0A0B',
+          surface: '#120C0D',
+          hover: '#1C1315',
         },
         border: {
-          DEFAULT: '#1f2c5c',
-          subtle: '#172146',
-          strong: '#2f4392',
+          DEFAULT: '#3A2022',
+          subtle: '#241517',
+          strong: '#5A2E30',
         },
         fg: {
-          DEFAULT: '#e8f1ff',
-          muted: '#8da4cf',
-          subtle: '#5d6f99',
+          DEFAULT: '#F5F3F3',
+          muted: '#A39A9B',
+          subtle: '#6E6566',
         },
         accent: {
-          DEFAULT: '#00e5ff',
-          soft: '#073445',
+          DEFAULT: '#E84142', // Avalanche red
+          soft: '#2A1314',
         },
         neon: {
-          cyan: '#00e5ff',
-          magenta: '#ff3df0',
-          violet: '#a855ff',
-          lime: '#a8ff3d',
+          cyan: '#E84142',
+          magenta: '#FF6B5B',
+          violet: '#F5A623',
+          lime: '#2FCC71',
         },
-        positive: '#39ff9f',
-        negative: '#ff4d6d',
-        warning: '#ffb547',
+        positive: '#2FCC71',
+        negative: '#FF5A5F',
+        warning: '#F5A623',
       },
       fontFamily: {
-        // Body + UI text: Rajdhani has a slight techno feel without being
-        // unreadable. Falls back to Inter / system sans.
+        // Clean modern sans — Inter, falling back to the system UI stack.
         sans: [
-          'Rajdhani',
           'Inter',
           'ui-sans-serif',
           'system-ui',
@@ -51,12 +49,12 @@ export default {
           'Roboto',
           'sans-serif',
         ],
-        // Big display numbers + the HUD wordmark.
+        // Display = the same clean sans (no more techno Orbitron).
         display: [
-          'Orbitron',
-          'Rajdhani',
+          'Inter',
           'ui-sans-serif',
           'system-ui',
+          '-apple-system',
           'sans-serif',
         ],
         mono: [
@@ -68,33 +66,30 @@ export default {
         ],
       },
       letterSpacing: {
-        hud: '0.18em',
+        hud: '0.08em',
       },
       boxShadow: {
-        // Subtle inner highlight + drop — the calm fallback.
         surface:
-          '0 1px 0 0 rgba(255,255,255,0.04) inset, 0 1px 2px rgba(0,0,0,0.4)',
-        // Neon halos. Use sparingly on hover / active states.
-        neon: '0 0 12px rgba(0, 229, 255, 0.45), 0 0 28px rgba(0, 229, 255, 0.18)',
+          '0 1px 0 0 rgba(255,255,255,0.03) inset, 0 1px 2px rgba(0,0,0,0.5)',
+        // Soft red halos — used sparingly on hover / active states.
+        neon: '0 0 12px rgba(232,65,66,0.35), 0 0 28px rgba(232,65,66,0.12)',
         'neon-soft':
-          '0 0 6px rgba(0, 229, 255, 0.35), 0 0 18px rgba(0, 229, 255, 0.12)',
+          '0 0 6px rgba(232,65,66,0.28), 0 0 16px rgba(232,65,66,0.10)',
         'neon-magenta':
-          '0 0 12px rgba(255, 61, 240, 0.5), 0 0 28px rgba(255, 61, 240, 0.18)',
+          '0 0 12px rgba(255,107,91,0.40), 0 0 24px rgba(255,107,91,0.14)',
         'neon-lime':
-          '0 0 12px rgba(168, 255, 61, 0.5), 0 0 24px rgba(168, 255, 61, 0.18)',
+          '0 0 12px rgba(47,204,113,0.40), 0 0 22px rgba(47,204,113,0.14)',
         hud:
-          '0 0 0 1px rgba(0, 229, 255, 0.35), 0 0 24px -8px rgba(0, 229, 255, 0.4), 0 12px 32px -16px rgba(0, 0, 0, 0.7)',
+          '0 0 0 1px rgba(255,255,255,0.05), 0 12px 32px -16px rgba(0,0,0,0.7)',
       },
       backgroundImage: {
-        // Faint scanlines overlay — applied to the page root.
         scanlines:
-          'repeating-linear-gradient(to bottom, rgba(255,255,255,0.025) 0, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 3px)',
-        // Holographic dot grid for the page canvas.
+          'repeating-linear-gradient(to bottom, rgba(255,255,255,0.015) 0, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 3px)',
+        // Faint neutral dot grid for the page canvas.
         'hud-grid':
-          'linear-gradient(rgba(0, 229, 255, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 229, 255, 0.06) 1px, transparent 1px)',
-        // Diagonal sheen used on titles / tape.
+          'linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)',
         'hud-sheen':
-          'linear-gradient(120deg, transparent 0%, rgba(0,229,255,0.12) 40%, rgba(255,61,240,0.12) 60%, transparent 100%)',
+          'linear-gradient(120deg, transparent 0%, rgba(232,65,66,0.10) 50%, transparent 100%)',
       },
       backgroundSize: {
         grid: '32px 32px',
@@ -104,12 +99,12 @@ export default {
           '0%': {
             opacity: '0',
             transform: 'translateY(-6px)',
-            backgroundColor: 'rgba(0, 229, 255, 0.16)',
+            backgroundColor: 'rgba(232,65,66,0.14)',
           },
           '60%': {
             opacity: '1',
             transform: 'translateY(0)',
-            backgroundColor: 'rgba(0, 229, 255, 0.16)',
+            backgroundColor: 'rgba(232,65,66,0.14)',
           },
           '100%': {
             opacity: '1',
@@ -121,33 +116,28 @@ export default {
           '0%,100%': { opacity: '1' },
           '50%': { opacity: '0.55' },
         },
-        // Cyan glow that breathes — used on active HUD chrome.
         'glow-pulse': {
           '0%,100%': {
             boxShadow:
-              '0 0 6px rgba(0,229,255,0.35), 0 0 18px rgba(0,229,255,0.12)',
+              '0 0 6px rgba(232,65,66,0.32), 0 0 16px rgba(232,65,66,0.12)',
           },
           '50%': {
             boxShadow:
-              '0 0 14px rgba(0,229,255,0.6), 0 0 32px rgba(0,229,255,0.25)',
+              '0 0 12px rgba(232,65,66,0.5), 0 0 28px rgba(232,65,66,0.2)',
           },
         },
-        // CRT-style flicker on the wordmark.
         flicker: {
           '0%,19%,21%,23%,25%,54%,56%,100%': { opacity: '1' },
           '20%,24%,55%': { opacity: '0.55' },
         },
-        // Slow pan of a scanline sweeping the canvas.
         scan: {
           '0%': { transform: 'translateY(-100%)' },
           '100%': { transform: 'translateY(100vh)' },
         },
-        // Background grid drift — barely noticeable but adds life.
         'grid-drift': {
           '0%': { backgroundPosition: '0 0, 0 0' },
           '100%': { backgroundPosition: '32px 32px, 32px 32px' },
         },
-        // Ticker dot blink.
         blink: {
           '0%,100%': { opacity: '1' },
           '50%': { opacity: '0.2' },

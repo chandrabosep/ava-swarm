@@ -60,9 +60,18 @@ function fallbackPrice(symbol?: string): number {
       return 1;
     case 'UNI':
       return 8;
+    case 'AVAX':
+    case 'WAVAX':
+      return 30;
     default:
       return 0;
   }
+}
+
+/** Native asset symbol for an Alchemy network id. Avalanche networks are
+ *  AVAX; everything else (eth/base/etc) is ETH. */
+function nativeSymbol(network?: string): string {
+  return (network ?? '').toLowerCase().includes('avax') ? 'AVAX' : 'ETH';
 }
 
 async function fetchAlchemyTokens(wallet: string): Promise<AlchemyToken[]> {
@@ -99,17 +108,18 @@ function alchemyToZerionPosition(t: AlchemyToken): ZerionPosition | null {
   const whole = raw / div;
   const frac = raw % div;
   const balance = parseFloat(`${whole}.${frac.toString().padStart(dec, '0')}`);
-  // Canonicalize: every chain's native asset is rendered as ETH so the
-  // allocation chart aggregates Sepolia + Base Sepolia native balances
-  // into a single ETH row instead of showing two separate "ETH" entries.
-  // Same for stablecoins that some chains label differently.
+  // Canonicalize the native asset per network — Avalanche's native is AVAX,
+  // EVM L1/L2 testnets are ETH. (Previously every native was forced to ETH,
+  // which mislabeled Fuji AVAX as ETH and mispriced it.) Stablecoins that
+  // some chains label differently fold into USDC.
+  const native = nativeSymbol(t.network);
   const rawSym = (
     t.tokenMetadata?.symbol ??
-    (t.tokenAddress === null ? 'ETH' : '')
+    (t.tokenAddress === null ? native : '')
   ).toUpperCase();
   const symbol =
     t.tokenAddress === null
-      ? 'ETH'
+      ? native
       : rawSym === 'USDBC' || rawSym === 'USDCE'
         ? 'USDC'
         : rawSym || 'UNKNOWN';
@@ -216,7 +226,8 @@ export async function getAlchemyPortfolio(
     const div = 10n ** BigInt(dec);
     const balance = Number(raw / div) + Number(raw % div) / Number(div);
     const symbol =
-      t.tokenMetadata?.symbol ?? (t.tokenAddress === null ? 'ETH' : 'X');
+      t.tokenMetadata?.symbol ??
+      (t.tokenAddress === null ? nativeSymbol(t.network) : 'X');
     const usd = t.tokenPrices?.find((p) => p.currency.toLowerCase() === 'usd');
     const price = usd ? parseFloat(usd.value) : fallbackPrice(symbol);
     const value = balance * price;
