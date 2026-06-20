@@ -19,25 +19,49 @@
 # Cross-host AXL is configured via AXL_BOOTSTRAP_PEERS env at runtime.
 
 # ---------------------------------------------------------------------
-# Stage 1: AXL binary (best-effort)
+# Stage 1: AXL binary
 # ---------------------------------------------------------------------
-FROM golang:1.22-bookworm AS axl-build
+# The gensyn-ai/axl repo's actual entrypoint is cmd/node (built locally
+# via `make build` → `go build -o node ./cmd/node`). The repo's go.mod
+# pins GOTOOLCHAIN=go1.25.5, so we use golang:1.25 — the toolchain
+# directive will reject 1.22.
+#
+# Output binary is named `axl` (not `node`) so the runtime entrypoint can
+# invoke it as `axl -config ...` matching the existing scripts.
+#
+# This stage is no longer wrapped in `|| true` — if the build fails, the
+# image build fails loudly. Comment out the COPY in the runtime stage and
+# the container still boots (entrypoint detects missing binary and sets
+# AXL_DISABLED), but we want this stage to actually succeed in production.
+FROM golang:1.25-bookworm AS axl-build
 
 ARG AXL_REPO=https://github.com/gensyn-ai/axl
 ARG AXL_REF=main
 
 WORKDIR /src
-# Best-effort build. If the repo layout changes or the build invocation
-# differs from `go build ./...`, we touch an empty file at /out/axl-missing
-# so the runtime stage knows to set AXL_DISABLED. Container still ships.
 RUN set -eux; \
-    git clone --depth 1 --branch ${AXL_REF} ${AXL_REPO} . || (mkdir -p /out && touch /out/axl-missing && exit 0); \
-    if [ -d cmd/axl ]; then \
-      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/axl ./cmd/axl || (mkdir -p /out && touch /out/axl-missing); \
+    git clone --depth 1 --branch ${AXL_REF} ${AXL_REPO} .; \
+    mkdir -p /out; \
+    if [ -d cmd/node ]; then \
+      echo "[axl-build] building from cmd/node (repo layout matches local Makefile)"; \
+      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/axl ./cmd/node; \
+    elif [ -d cmd/axl ]; then \
+      echo "[axl-build] building from cmd/axl"; \
+      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/axl ./cmd/axl; \
     else \
-      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /out/axl ./... || (mkdir -p /out && touch /out/axl-missing); \
+      echo "[axl-build] no recognized cmd/* layout — running 'make build' if Makefile exists"; \
+      if [ -f Makefile ]; then \
+        make build; \
+        # Local Makefile produces ./node — copy it as /out/axl
+        if [ -f node ]; then mv node /out/axl; \
+        elif [ -f axl ]; then mv axl /out/axl; \
+        else echo "[axl-build] make build did not produce expected binary" >&2; exit 1; fi; \
+      else \
+        echo "[axl-build] no Makefile and no cmd/{node,axl} — failing build" >&2; exit 1; \
+      fi; \
     fi; \
-    [ -f /out/axl ] || touch /out/axl-missing
+    test -x /out/axl; \
+    /out/axl --help 2>&1 | head -20 || true
 
 # ---------------------------------------------------------------------
 # Stage 2: runtime
