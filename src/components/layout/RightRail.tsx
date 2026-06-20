@@ -5,7 +5,7 @@ import { AgentActivityStream } from '@/components/swarm/AgentActivityStream';
 
 export function RightRail() {
   return (
-    <aside className="w-[420px] shrink-0 border-l border-accent/20 h-full p-5 overflow-y-auto space-y-6 bg-bg/40 backdrop-blur-sm">
+    <aside className="w-[420px] shrink-0 border-l border-accent/20 h-full p-5 overflow-hidden space-y-6 bg-bg/40 backdrop-blur-sm flex flex-col">
       {/* Connect / account button — driven by wagmi state, never disappears.
           See WalletButton.tsx for the details. */}
       <WalletButton />

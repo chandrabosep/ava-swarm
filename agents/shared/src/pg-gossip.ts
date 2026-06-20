@@ -197,12 +197,36 @@ export class PgGossipBus {
 
 let singleton: PgGossipBus | null = null;
 
+/** No-op bus — used when PG_GOSSIP_ENABLED=false. Delivery falls entirely
+ *  to the DB-poll transport (intent-poll.ts), which only needs the pooled
+ *  Prisma connection. This avoids holding a direct LISTEN socket per agent,
+ *  which on Supabase free tier gets reset constantly (ECONNRESET) and made
+ *  routing flaky. The latency cost is the poll interval (~2-3s), fine for a
+ *  single-host demo. */
+class NoopGossipBus extends PgGossipBus {
+  async publish(): Promise<{ ok: boolean; delivered: boolean }> {
+    return { ok: true, delivered: false }; // DB-poll carries it
+  }
+  async *subscribe<T = unknown>(): AsyncGenerator<GossipMessage<T>> {
+    // never yields — subscribers rely on intent-poll instead
+    return;
+  }
+  async close(): Promise<void> {}
+}
+
 /** Process-wide singleton — multiple agents in the same process share one
  *  LISTEN connection. Uses DIRECT_URL if set, else DATABASE_URL (which
  *  may be pgbouncer'd and silently fail — that's OK, fallback chain
- *  has DB poll). */
+ *  has DB poll). Set PG_GOSSIP_ENABLED=false to disable gossip entirely
+ *  and rely on the DB-poll transport (more stable on free-tier Postgres). */
 export function pgGossip(): PgGossipBus {
   if (singleton) return singleton;
+  const enabled =
+    (process.env.PG_GOSSIP_ENABLED ?? 'true').toLowerCase() !== 'false';
+  if (!enabled) {
+    singleton = new NoopGossipBus('');
+    return singleton;
+  }
   // Prefer DIRECT_URL (port 5432) — pgbouncer in tx-pool mode (port
   // 6543) silently drops LISTEN registrations between transactions.
   let url = '';

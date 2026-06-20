@@ -19,6 +19,7 @@ import {
   fetchAlchemyTokens,
   alchemyBalanceFloat,
   alchemyUsdPrice,
+  readFujiPortfolio,
 } from '@swarm/shared';
 import type { Symbol } from './tokens.js';
 import type { CurrentSlice } from './decompose.js';
@@ -43,22 +44,21 @@ interface ZerionPositionsResponse {
   }>;
 }
 
-const ALLOWED: Symbol[] = ['ETH', 'WETH', 'WBTC', 'USDC', 'UNI'];
+const ALLOWED: Symbol[] = ['ETH', 'WETH', 'WBTC', 'USDC', 'UNI', 'AVAX', 'WAVAX', 'DAI', 'JOE'];
 
-/** Same selector PM uses — reads the user's EOA by default. Override
- *  with PM_PORTFOLIO_FROM=kh to revert to the legacy KH-wallet path. */
+/** Same selector PM uses — reads the user's EOA. */
 function effectiveWallet(userEoa: string): string {
-  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'eoa').toLowerCase();
-  if (mode === 'kh') {
-    return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
-  }
   return userEoa;
 }
 
 export async function currentSlices(wallet: string): Promise<CurrentSlice[]> {
   const target = effectiveWallet(wallet);
-  // Mirror PM's source-selection logic — see agents/pm/src/portfolio.ts.
-  if (env.useTestnet() || env.portfolioSource() === 'alchemy') {
+  // Fuji: real on-chain balances via RPC (must match what PM saw and what
+  // the executor will find — Alchemy's testnet data is phantom).
+  if (env.useTestnet()) {
+    return currentSlicesFujiRpc(target);
+  }
+  if (env.portfolioSource() === 'alchemy') {
     return currentSlicesAlchemy(target);
   }
   return currentSlicesZerion(target);
@@ -72,10 +72,34 @@ export async function currentSlices(wallet: string): Promise<CurrentSlice[]> {
 function canonicalSymbol(sym: string): Symbol | null {
   const upper = sym.toUpperCase();
   if (upper === 'WETH') return 'ETH';
-  if ((['ETH', 'WBTC', 'USDC', 'UNI'] as const).includes(upper as Symbol)) {
+  if (upper === 'WAVAX') return 'AVAX';
+  if (
+    (['ETH', 'WBTC', 'USDC', 'UNI', 'AVAX', 'DAI', 'JOE'] as Symbol[]).includes(
+      upper as Symbol,
+    )
+  ) {
     return upper as Symbol;
   }
   return null;
+}
+
+async function currentSlicesFujiRpc(wallet: string): Promise<CurrentSlice[]> {
+  const holdings = await readFujiPortfolio(wallet.toLowerCase());
+  const map = new Map<Symbol, { valueUsd: number; quantity: number }>();
+  for (const h of holdings) {
+    const sym = canonicalSymbol(h.symbol); // WAVAX → AVAX
+    if (!sym) continue;
+    const cur = map.get(sym) ?? { valueUsd: 0, quantity: 0 };
+    cur.valueUsd += h.valueUsd;
+    cur.quantity += h.balance;
+    map.set(sym, cur);
+  }
+  return Array.from(map.entries()).map(([symbol, acc]) => ({
+    symbol,
+    valueUsd: acc.valueUsd,
+    priceUsd: acc.quantity > 0 ? acc.valueUsd / acc.quantity : fallbackPrice(symbol),
+    decimals: defaultDecimals(symbol),
+  }));
 }
 
 async function currentSlicesAlchemy(wallet: string): Promise<CurrentSlice[]> {
@@ -91,10 +115,11 @@ async function currentSlicesAlchemy(wallet: string): Promise<CurrentSlice[]> {
     if (t.error) continue;
     const rawSym = t.tokenMetadata?.symbol ?? '';
     // Native tokens come back without a metadata.symbol on some chains —
-    // a null tokenAddress means it's the chain's native asset, which we
-    // treat as ETH for our universe.
+    // a null tokenAddress means it's the chain's native asset. Avalanche
+    // networks are AVAX; everything else is ETH.
+    const nativeSym = t.network?.toLowerCase().includes('avax') ? 'AVAX' : 'ETH';
     const effectiveRaw =
-      t.tokenAddress === null && !rawSym ? 'ETH' : rawSym;
+      t.tokenAddress === null && !rawSym ? nativeSym : rawSym;
     const effectiveSym = canonicalSymbol(effectiveRaw);
     if (!effectiveSym) continue;
     const qty = alchemyBalanceFloat(t);
