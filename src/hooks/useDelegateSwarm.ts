@@ -86,7 +86,7 @@ export function useDelegateSwarm() {
           sessionAddress: SWARM_SERVICE_ADDRESSES[agent],
           policyHash: hashFromSignature(signature, agent),
           validUntil: payload.validUntil,
-          chains: 'mainnet',
+          chains: 'avalanche-fuji',
         });
       }
 

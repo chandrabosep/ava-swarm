@@ -10,7 +10,11 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
-import { env } from './env.js';
+// NOTE: Legacy Model-A helper, currently unused. Model B keeps a single
+// service keypair per agent (see keys.ts) rather than encrypting per-user
+// privkeys at rest, so `env` no longer exposes the encryption key. We read
+// AGENT_PRIVKEY_ENCRYPTION_KEY directly here to keep this module
+// self-contained should the at-rest encryption path be reintroduced.
 
 interface EncryptedBlob {
   iv: string;
@@ -21,7 +25,7 @@ interface EncryptedBlob {
 const ALGO = 'aes-256-gcm';
 
 function key(): Buffer {
-  const hex = env.encryptionKey();
+  const hex = process.env.AGENT_PRIVKEY_ENCRYPTION_KEY ?? '';
   if (hex.length !== 64) {
     throw new Error(
       'AGENT_PRIVKEY_ENCRYPTION_KEY must be 32 bytes (64 hex chars). Generate with: openssl rand -hex 32',
