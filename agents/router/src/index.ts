@@ -41,7 +41,7 @@ import { startDebateListener } from './debate.js';
  *  PRIMARY_CHAIN was misconfigured to mainnet — shipping mainnet
  *  swaps from a testnet build is the worst kind of footgun and trashes
  *  the dashboard with phantom mainnet rows. */
-const TESTNET_CHAINS: SupportedChain[] = ['sepolia', 'base-sepolia'];
+const TESTNET_CHAINS: SupportedChain[] = ['sepolia', 'base-sepolia', 'avalanche-fuji'];
 const PRIMARY_CHAIN: SupportedChain = (() => {
   const fromEnv = process.env.PRIMARY_CHAIN as SupportedChain | undefined;
   if (env.useTestnet()) {

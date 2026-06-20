@@ -11,9 +11,9 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 // it doesn't bleed past the chamfered corners.
 const VARIANT: Record<NonNullable<ButtonProps['variant']>, string> = {
   primary:
-    'bg-accent text-bg border border-accent shadow-[0_0_12px_-2px_rgba(0,229,255,0.6)] hover:bg-accent/90 hover:shadow-[0_0_18px_0_rgba(0,229,255,0.75)]',
+    'bg-accent text-bg border border-accent shadow-[0_0_12px_-2px_rgba(232,65,66,0.6)] hover:bg-accent/90 hover:shadow-[0_0_18px_0_rgba(232,65,66,0.75)]',
   secondary:
-    'bg-bg-hover/70 text-fg border border-border-strong/70 hover:border-accent/70 hover:text-accent hover:shadow-[0_0_10px_-2px_rgba(0,229,255,0.45)]',
+    'bg-bg-hover/70 text-fg border border-border-strong/70 hover:border-accent/70 hover:text-accent hover:shadow-[0_0_10px_-2px_rgba(232,65,66,0.45)]',
   ghost:
     'bg-transparent text-fg-muted border border-transparent hover:text-accent hover:bg-bg-hover/50 hover:border-accent/40',
 };

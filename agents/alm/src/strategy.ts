@@ -42,6 +42,11 @@ const POOL_MANAGER: Record<SupportedChain, `0x${string}`> = {
   // Sepolia v4 PoolManager (per docs.uniswap.org/contracts/v4/deployments).
   sepolia: '0xE03A1074c86CFeDd5C142C4F04F1a1536e203543',
   'base-sepolia': '0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408',
+  // Uniswap v4 not deployed on Avalanche. analyzePositions only runs over
+  // positions returned by readPositions (always empty on Avalanche), so this
+  // is never dereferenced — present only to satisfy Record<SupportedChain>.
+  avalanche: '0x0000000000000000000000000000000000000000',
+  'avalanche-fuji': '0x0000000000000000000000000000000000000000',
 };
 
 /** Trigger rebalance if current tick is within this many ticks of a bound. */

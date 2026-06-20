@@ -23,18 +23,12 @@ import {
   fetchAlchemyTokens,
   alchemyBalanceFloat,
   alchemyUsdPrice,
+  readFujiPortfolio,
 } from '@swarm/shared';
 
-/** Resolve which wallet PM should read positions from. Defaults to the
- *  user's EOA (matches what the dashboard renders under EIP-7702).
- *  Override with PM_PORTFOLIO_FROM=kh to read the KH-managed wallet
- *  instead — only useful for the legacy Smart Sessions path where KH
- *  executed swaps from its own keypair. */
+/** Resolve which wallet PM should read positions from — the user's EOA
+ *  (matches what the dashboard renders). */
 function effectiveWallet(userEoa: string): string {
-  const mode = (process.env.PM_PORTFOLIO_FROM ?? 'eoa').toLowerCase();
-  if (mode === 'kh') {
-    return process.env.KEEPERHUB_WALLET_ADDRESS ?? userEoa;
-  }
   return userEoa;
 }
 
@@ -79,12 +73,29 @@ const TOP_N_POSITIONS = 10;
 
 export async function snapshot(wallet: string): Promise<PortfolioSnapshot> {
   const target = effectiveWallet(wallet);
-  // Alchemy on testnet always; on mainnet whenever PORTFOLIO_SOURCE=alchemy
-  // (Zerion proxy worker hits free-tier 429s under demo load).
-  if (env.useTestnet() || env.portfolioSource() === 'alchemy') {
+  // Fuji: read real on-chain balances via RPC (Alchemy's testnet data is
+  // phantom and disagrees with what the executor will actually find).
+  if (env.useTestnet()) {
+    return snapshotFujiRpc(target);
+  }
+  if (env.portfolioSource() === 'alchemy') {
     return snapshotAlchemy(target);
   }
   return snapshotZerion(target);
+}
+
+async function snapshotFujiRpc(wallet: string): Promise<PortfolioSnapshot> {
+  const holdings = await readFujiPortfolio(wallet.toLowerCase());
+  const rows: PositionSlice[] = holdings.map((h) => ({
+    symbol: h.symbol,
+    chain: 'avalanche-fuji',
+    valueUsd: h.valueUsd,
+    weight: 0,
+    change24hPct: 0,
+  }));
+  const totalValueUsd = rows.reduce((s, p) => s + p.valueUsd, 0);
+  for (const r of rows) r.weight = totalValueUsd > 0 ? r.valueUsd / totalValueUsd : 0;
+  return { totalValueUsd, change24hUsd: 0, change24hPct: 0, positions: rows };
 }
 
 async function snapshotAlchemy(wallet: string): Promise<PortfolioSnapshot> {
@@ -95,7 +106,11 @@ async function snapshotAlchemy(wallet: string): Promise<PortfolioSnapshot> {
   for (const t of tokens) {
     if (t.error) continue;
     const symbol = t.tokenMetadata?.symbol ??
-      (t.tokenAddress === null ? 'ETH' : 'UNKNOWN');
+      (t.tokenAddress === null
+        ? t.network?.toLowerCase().includes('avax')
+          ? 'AVAX'
+          : 'ETH'
+        : 'UNKNOWN');
     const qty = alchemyBalanceFloat(t);
     const priceUsd = alchemyUsdPrice(t);
     const valueUsd = qty * priceUsd;

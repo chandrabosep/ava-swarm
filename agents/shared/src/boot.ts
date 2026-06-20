@@ -6,50 +6,91 @@
 // here so individual agents stay focused on their actual work.
 
 import { db, disconnectDb, type AgentRole } from './db.js';
-import { AxlClient, TOPICS } from './axl.js';
-import { env } from './env.js';
+import { TOPICS } from './topics.js';
+import { MeshBus } from './mesh.js';
 import { createLogger, type Logger } from './log.js';
 import { serviceAddress } from './keys.js';
+import { ensureAgentIdentity } from './erc8004.js';
 import { pgGossip, type PgGossipBus } from './pg-gossip.js';
 
 export interface AgentContext {
   role: AgentRole;
   log: Logger;
-  axl: AxlClient;
-  /** Postgres LISTEN/NOTIFY bus — instant cross-process gossip on a
-   *  single host. Sits alongside AXL (multi-host) and DB poll
-   *  (resilience) in the three-layer transport stack. */
+  /** Inter-agent pub/sub. Postgres LISTEN/NOTIFY under the hood (see
+   *  mesh.ts); paired with the DB-poll fallback in intent-poll.ts. */
+  axl: MeshBus;
+  /** The raw Postgres gossip bus the mesh rides on. Some agents publish/
+   *  subscribe to it directly for the debate protocol. */
   pg: PgGossipBus;
-  /** Peer id + pubkey from the local AXL daemon. */
+  /** Stable per-agent identity (the agent role). */
   identity: { peerId: string; pubkey: string };
+  /** ERC-8004 on-chain agentId, or null in degraded mode (registries
+   *  unconfigured / chain unreachable). Set during boot. */
+  agentId: number | null;
+}
+
+/** Patterns for transient DB/socket errors we should survive rather than
+ *  crash on. Supabase's free-tier pooler resets idle/long-lived connections
+ *  (ECONNRESET, "Server has closed the connection", etc.); the pg-gossip bus
+ *  and Prisma both reconnect on the next call, so a crash here just churns
+ *  the process and stalls routing. */
+const TRANSIENT_CONN_RE =
+  /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|Connection terminated|Server has closed|kind: ?Closed|Closed the connection|socket hang up/i;
+
+let guardsInstalled = false;
+function installResilienceHandlers(log: Logger): void {
+  if (guardsInstalled) return;
+  guardsInstalled = true;
+  const isTransient = (err: unknown): boolean => {
+    const msg = err instanceof Error ? `${err.message} ${(err as { code?: string }).code ?? ''}` : String(err);
+    return TRANSIENT_CONN_RE.test(msg);
+  };
+  process.on('unhandledRejection', (reason) => {
+    if (isTransient(reason)) {
+      log.warn('transient connection error (recovering)', {
+        err: reason instanceof Error ? reason.message : String(reason),
+      });
+      return; // swallow — pg/Prisma reconnect on next use
+    }
+    log.error('unhandledRejection', {
+      err: reason instanceof Error ? reason.stack ?? reason.message : String(reason),
+    });
+  });
+  process.on('uncaughtException', (err) => {
+    if (isTransient(err)) {
+      log.warn('transient connection error (recovering)', { err: err.message });
+      return; // swallow
+    }
+    log.error('uncaughtException — exiting for restart', { err: err.stack ?? err.message });
+    process.exit(1);
+  });
 }
 
 export async function bootAgent(role: AgentRole): Promise<AgentContext> {
   const log = createLogger(role);
+  installResilienceHandlers(log);
   log.info('booting');
 
   // Service identity — log the public address so the operator can paste
   // it into the extension's hardcoded service-address constants.
+  let agentId: number | null = null;
   try {
     const addr = serviceAddress(role);
     log.info('service identity', { address: addr });
+    // ERC-8004 on-chain identity. Non-fatal: register (or reuse) the agent's
+    // trustless-agent NFT so its x402 payments are reputation-traceable.
+    agentId = await ensureAgentIdentity(role, log);
   } catch (err) {
     log.warn('service privkey missing — agent cannot sign', {
       err: err instanceof Error ? err.message : String(err),
     });
   }
 
-  // AXL — non-fatal if down; agent operates in degraded mode.
-  const axl = new AxlClient(env.axlEndpoint(role));
-  let identity = { peerId: 'offline', pubkey: '0x' };
-  try {
-    identity = await axl.identity();
-    log.info('axl up', { peerId: identity.peerId });
-  } catch (err) {
-    log.warn('axl down — running without inter-agent comms', {
-      err: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // Inter-agent mesh — Postgres LISTEN/NOTIFY (see mesh.ts). No daemon,
+  // no network probe; shares the pgGossip connection opened below.
+  const axl = new MeshBus(role);
+  const identity = await axl.identity();
+  log.info('mesh up', { peerId: identity.peerId });
 
   // DB — fatal if down; agent can't track tenants without it.
   try {
@@ -82,12 +123,12 @@ export async function bootAgent(role: AgentRole): Promise<AgentContext> {
   pg.onLifecycle = (event, meta) => log.info(event, meta);
 
   installShutdownHandlers(log, pg);
-  return { role, log, axl, pg, identity };
+  return { role, log, axl, pg, identity, agentId };
 }
 
 /**
- * Periodically publish a heartbeat on AXL AND persist it to the DB so the
- * dashboard's status query can read "X seconds ago" without an AXL
+ * Periodically publish a heartbeat on the mesh AND persist it to the DB so
+ * the dashboard's status query can read "X seconds ago" without a mesh
  * subscription.
  *
  * We use the AgentState table (one row per agent globally — null
@@ -105,7 +146,7 @@ export function startHeartbeat(
     try {
       const users = await db().user.count();
       const ts = Date.now();
-      // AXL gossip — fan out to peer agents.
+      // Mesh gossip — fan out to peer agents over Postgres LISTEN/NOTIFY.
       await ctx.axl
         .publish({
           topic: TOPICS.heartbeat,
@@ -117,7 +158,7 @@ export function startHeartbeat(
           },
         })
         .catch(() => {
-          /* AXL down: heartbeat still lands in DB below */
+          /* gossip down: heartbeat still lands in DB below */
         });
 
       // DB — global row keyed by (agent, GLOBAL_HEARTBEAT_KEY) so the
