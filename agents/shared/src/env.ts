@@ -19,17 +19,6 @@ export const env = {
   databaseUrl: () => required('DATABASE_URL'),
   directUrl: () => required('DIRECT_URL'),
 
-  // AXL — each agent picks its own slot
-  axlEndpoint: (agent: 'pm' | 'alm' | 'router' | 'executor'): string => {
-    const map = {
-      pm: 'AXL_PM_ENDPOINT',
-      alm: 'AXL_ALM_ENDPOINT',
-      router: 'AXL_ROUTER_ENDPOINT',
-      executor: 'AXL_EXECUTOR_ENDPOINT',
-    } as const;
-    return required(map[agent]);
-  },
-
   // (Removed) AGENT_PRIVKEY_ENCRYPTION_KEY — used in Model A for per-user
   // privkey encryption. Model B uses a single service keypair per agent
   // (see PM_SERVICE_PRIVKEY etc. and src/keys.ts).
@@ -41,16 +30,45 @@ export const env = {
       | 'base'
       | 'unichain'
       | 'sepolia'
-      | 'base-sepolia',
+      | 'base-sepolia'
+      | 'avalanche'
+      | 'avalanche-fuji',
   ): string =>
     required(`RPC_${chain.toUpperCase().replace(/-/g, '_')}`),
 
-  // Sponsor APIs
-  keeperhubApiKey: () => required('KEEPERHUB_API_KEY'),
-  keeperhubBaseUrl: () => optional('KEEPERHUB_BASE_URL', 'https://api.keeperhub.com')!,
-  uniswapApiKey: () => required('UNISWAP_API_KEY'),
-  uniswapBaseUrl: () =>
-    optional('UNISWAP_API_BASE', 'https://trade-api.gateway.uniswap.org/v1')!,
+  // --- Speedrun: Agentic Payments (Avalanche) ---------------------------
+  // The chain the agents-hire-agents demo runs on. Fuji under USE_TESTNET
+  // (the Speedrun target), Avalanche C-Chain mainnet otherwise (bonus).
+  demoChain: (): 'avalanche' | 'avalanche-fuji' =>
+    (optional('USE_TESTNET', 'false')!.toLowerCase() === 'true' ||
+      optional('USE_TESTNET', 'false') === '1')
+      ? 'avalanche-fuji'
+      : 'avalanche',
+
+  // ERC-8004 registries deployed by contracts/script/DeployErc8004.s.sol.
+  // Optional: when unset the swarm boots in "no on-chain identity" degraded
+  // mode (payments still work, just not reputation-gated).
+  erc8004Identity: () => optional('ERC8004_IDENTITY_ADDRESS'),
+  erc8004Reputation: () => optional('ERC8004_REPUTATION_ADDRESS'),
+  /** Reuse a previously-registered agentId across restarts (avoids minting a
+   *  fresh identity every boot). Logged at first registration to paste back. */
+  erc8004AgentId: (role: 'pm' | 'alm' | 'router' | 'executor'): string | undefined =>
+    optional(`ERC8004_${role.toUpperCase()}_AGENT_ID`),
+
+  // x402 — hosted facilitator that settles USDC payments on Avalanche.
+  x402FacilitatorUrl: () =>
+    optional('X402_FACILITATOR_URL', 'https://facilitator.ultravioletadao.xyz')!,
+  x402Network: () => optional('X402_NETWORK', 'avalanche-fuji')!,
+  /** Fuji test-USDC by default (the Speedrun stablecoin). */
+  usdcAddress: () =>
+    optional('USDC_ADDRESS', '0x5425890298aed601595a70AB815c96711a31Bc65')!,
+
+  // Marketplace — the sellers' storefront hosting x402-gated specialist
+  // endpoints. PM (the buyer) calls it; each path settles to that
+  // specialist's own wallet.
+  marketplacePort: (): number => Number(optional('MARKETPLACE_PORT', '8788')),
+  marketplaceUrl: () => optional('MARKETPLACE_URL', 'http://localhost:8788')!,
+
   pimlicoApiKey: () => optional('PIMLICO_API_KEY'),
 
   // PM / LLM provider switch — `groq` (default) or `hermes` (Nous Portal /

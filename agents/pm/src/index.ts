@@ -1,8 +1,12 @@
-// Portfolio Manager — LLM-driven.
+// Portfolio Manager.
 //
-// Tick every 5 minutes: pull each user's portfolio, ask Claude what
-// the target allocation should be, publish AllocationIntent on AXL.
-// Router translates that into per-token swaps; Executor settles them.
+// Speedrun role: the lead agent that hires specialist agents, paying each
+// via x402 and rating them via ERC-8004 (see hire.ts). This is the demo.
+//
+// The legacy DeFi rebalance pipeline (PM proposes an allocation → Router
+// decomposes into swaps → Executor settles) is OFF by default — it spammed
+// the feed with simulated sepolia swaps that are off-message for an
+// Avalanche agentic-payments demo. Re-enable with PM_REBALANCE_ENABLED=true.
 
 import {
   bootAgent,
@@ -12,43 +16,53 @@ import {
 } from '@swarm/shared';
 import { startTick } from './tick.js';
 import { startDebateInbox } from './debate.js';
+import { startHireLoop } from './hire.js';
+
+const REBALANCE_ENABLED =
+  (process.env.PM_REBALANCE_ENABLED ?? 'false').toLowerCase() === 'true';
 
 async function main() {
   const ctx = await bootAgent('pm');
   const stopHeartbeat = startHeartbeat(ctx);
 
-  // Long-lived debate feedback inbox — must register LISTEN on the
-  // alm.feedback / router.feedback channels BEFORE the first tick,
-  // otherwise peers' immediate replies arrive at an empty subscriber
-  // set and PM sees zero feedback.
-  const stopInbox = startDebateInbox(ctx);
+  // Speedrun: Agentic Payments — PM hires specialist agents, paying each via
+  // x402 and rating them via ERC-8004. Self-contained; runs independent of
+  // user sessions so the demo works as soon as the PM wallet is funded.
+  const stopHire = startHireLoop(ctx);
 
-  const stopTick = startTick(ctx);
+  // Legacy rebalance swap pipeline — off unless explicitly enabled.
+  let stopTick = () => {};
+  let stopInbox = () => {};
+  if (REBALANCE_ENABLED) {
+    // Debate feedback inbox must register its LISTEN before the first tick,
+    // otherwise peers' immediate replies hit an empty subscriber set.
+    stopInbox = startDebateInbox(ctx);
+    stopTick = startTick(ctx);
 
-  // Listen for executor receipts so the LLM has post-trade context next tick.
-  void (async () => {
-    for await (const msg of ctx.axl.subscribe<SwarmMessage<unknown>>(
-      TOPICS.executorReceipt,
-    )) {
-      ctx.log.info('observed receipt', { from: msg.from });
-    }
-  })();
+    // Post-trade context for the next tick.
+    void (async () => {
+      for await (const msg of ctx.axl.subscribe<SwarmMessage<unknown>>(
+        TOPICS.executorReceipt,
+      )) {
+        ctx.log.info('observed receipt', { from: msg.from });
+      }
+    })();
+  } else {
+    ctx.log.info('rebalance pipeline disabled (PM_REBALANCE_ENABLED!=true)');
+  }
 
   ctx.log.info('ready', {
     role: 'pm',
-    publishes: TOPICS.pmAllocation,
-    listens: [
-      TOPICS.executorReceipt,
-      TOPICS.heartbeat,
-      TOPICS.almFeedback,
-      TOPICS.routerFeedback,
-    ],
+    mode: REBALANCE_ENABLED ? 'hire+rebalance' : 'hire-only',
+    hireLoop: true,
+    rebalance: REBALANCE_ENABLED,
   });
 
   process.stdin.resume();
   void stopHeartbeat;
   void stopTick;
   void stopInbox;
+  void stopHire;
 }
 
 main().catch((err: unknown) => {
