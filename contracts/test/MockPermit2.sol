@@ -70,7 +70,7 @@ contract MockPermit2 is ISignatureTransfer {
         SignatureTransferDetails calldata transferDetails,
         address owner,
         bytes32 witness,
-        string calldata witnessTypeString,
+        string memory witnessTypeString,
         bytes calldata signature
     ) internal {
         if (usedNonces[owner][permit.nonce]) revert NonceUsed();

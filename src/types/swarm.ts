@@ -20,14 +20,13 @@ import type { Address, Hex } from 'viem';
  * Testnet build: every name maps to its Sepolia equivalent so the rest of
  * the codebase doesn't need to know it's running on a testnet.
  */
-export const SUPPORTED_CHAINS = ['unichain', 'base', 'mainnet'] as const;
+export const SUPPORTED_CHAINS = ['avalanche', 'avalanche-fuji'] as const;
 export type SupportedChain = (typeof SUPPORTED_CHAINS)[number];
 
-/** Numeric chain ids for the supported chains. (Testnet variants.) */
+/** Numeric chain ids for the supported chains. */
 export const CHAIN_ID: Record<SupportedChain, number> = {
-  unichain: 1301, // Unichain Sepolia
-  base: 84532, // Base Sepolia
-  mainnet: 11155111, // Ethereum Sepolia
+  avalanche: 43114, // Avalanche C-Chain mainnet
+  'avalanche-fuji': 43113, // Avalanche Fuji C-Chain testnet
 };
 
 // --- Smart account ---------------------------------------------------------

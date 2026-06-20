@@ -169,9 +169,15 @@ function fallbackPrice(sym: Symbol): number {
     case 'WBTC':
       return 60000;
     case 'USDC':
+    case 'DAI':
       return 1;
     case 'UNI':
       return 8;
+    case 'AVAX':
+    case 'WAVAX':
+      return 30;
+    case 'JOE':
+      return 0.5;
   }
 }
 

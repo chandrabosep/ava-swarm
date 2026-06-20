@@ -9,7 +9,12 @@ export type SupportedChain =
   | 'base'
   | 'mainnet'
   | 'sepolia'
-  | 'base-sepolia';
+  | 'base-sepolia'
+  // Speedrun: Agentic Payments target. Fuji is the C-Chain testnet the
+  // swarm runs on; `avalanche` is the mainnet C-Chain for the optional
+  // bonus deploy. The agents-hire-agents x402/ERC-8004 flow runs here.
+  | 'avalanche'
+  | 'avalanche-fuji';
 
 // --- Intent payload shapes -------------------------------------------------
 

@@ -82,6 +82,11 @@ function buildSystemPrompt(profile: RiskProfile): string {
   const shiftPct = Math.round(cfg.maxShiftPerTick * 100);
   const universe = env.pmAssetUniverse();
   const hasUniverse = universe.length > 0;
+  // The stable used for the floor — whichever stablecoin is in the universe
+  // (DAI on Avalanche/Pangolin; USDC elsewhere). Defaults to USDC.
+  const stableSym =
+    universe.find((s) => ['USDC', 'USDT', 'DAI'].includes(s.toUpperCase())) ??
+    'USDC';
   const universeRule = hasUniverse
     ? `HARD CONSTRAINT: targets MUST contain ONLY these symbols and NO others: ${universe.join(', ')}. Any other symbol (e.g. WBTC, UNI, WETH) is FORBIDDEN and will be rejected.`
     : 'Pick any tokens you think fit the strategy. No fixed universe.';
@@ -110,7 +115,7 @@ Rules:
 1. ${universeRule}
 2. Weights sum to exactly 1.0.
 3. No single non-stable token weight > ${cfg.maxToken.toFixed(2)} (${maxPct}%).
-4. Stablecoin floor (USDC) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
+4. Stablecoin floor (${stableSym}) >= ${cfg.stableFloor.toFixed(2)} (${stablePct}%).
 5. Move at most ${cfg.maxShiftPerTick.toFixed(2)} (${shiftPct}%) in absolute
    weight from the current allocation per tick (smooth changes).
 6. Be quantitative in the rationale. Reference current weights and 24h moves.`;
