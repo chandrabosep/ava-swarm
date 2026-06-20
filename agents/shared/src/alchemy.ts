@@ -99,6 +99,9 @@ function symbolFallbackPrice(symbol?: string): number {
       return 1;
     case 'UNI':
       return 8;
+    case 'AVAX':
+    case 'WAVAX':
+      return 30;
     default:
       return 0;
   }
@@ -110,9 +113,11 @@ function symbolFallbackPrice(symbol?: string): number {
 export function alchemyUsdPrice(t: AlchemyToken): number {
   const usd = t.tokenPrices?.find((p) => p.currency.toLowerCase() === 'usd');
   if (usd) return parseFloat(usd.value);
-  // No price — synthesize one from the symbol (testnet path).
+  // No price — synthesize one from the symbol (testnet path). Native asset
+  // is AVAX on Avalanche networks, ETH elsewhere.
+  const nativeSym = t.network?.toLowerCase().includes('avax') ? 'AVAX' : 'ETH';
   const sym = t.tokenMetadata?.symbol ??
-    (t.tokenAddress === null ? 'ETH' : undefined);
+    (t.tokenAddress === null ? nativeSym : undefined);
   return symbolFallbackPrice(sym);
 }
 

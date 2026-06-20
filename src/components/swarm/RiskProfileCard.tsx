@@ -17,6 +17,8 @@ import { Surface } from '@/components/common/Surface';
 import { Badge } from '@/components/common/Badge';
 import { setRiskProfile } from '@/lib/agents-api';
 import { useSwarmStatus, type RiskProfile } from '@/hooks/useSwarmStatus';
+import { isDemoFeed } from '@/lib/demoFeed';
+import { useDemoProfile, setDemoProfile } from '@/lib/demoProfile';
 
 const PROFILES: Array<{
   key: RiskProfile;
@@ -54,7 +56,9 @@ export function RiskProfileCard() {
   const { address: owner } = useAccount();
   const status = useSwarmStatus();
   const qc = useQueryClient();
-  const current = status.data?.riskProfile ?? 'balanced';
+  const demo = isDemoFeed();
+  const demoProfile = useDemoProfile();
+  const current = demo ? demoProfile : status.data?.riskProfile ?? 'balanced';
   const [pending, setPending] = useState<RiskProfile | null>(null);
 
   const mutation = useMutation({
@@ -71,7 +75,21 @@ export function RiskProfileCard() {
     },
   });
 
-  if (!owner) return null;
+  // In demo mode the change is local + instant (no backend). The store
+  // notifies every demo hook, which refetches the profile-specific feed +
+  // allocation. We still fire the backend write opportunistically.
+  const choose = (profile: RiskProfile) => {
+    if (demo) {
+      setDemoProfile(profile);
+      if (owner) mutation.mutate(profile);
+      return;
+    }
+    mutation.mutate(profile);
+  };
+
+  // Demo mode renders even without a connected wallet so the card is always
+  // interactive for recording.
+  if (!owner && !demo) return null;
 
   return (
     <Surface className="hud-corners p-5 space-y-4">
@@ -93,14 +111,14 @@ export function RiskProfileCard() {
             <button
               key={p.key}
               type="button"
-              onClick={() => mutation.mutate(p.key)}
-              disabled={mutation.isPending || active}
+              onClick={() => choose(p.key)}
+              disabled={(!demo && mutation.isPending) || active}
               className={[
                 'text-left rounded-sm border p-3 transition-all',
                 active
-                  ? 'border-accent bg-accent/10 shadow-[0_0_14px_-2px_rgba(0,229,255,0.55)]'
-                  : 'border-border-subtle hover:border-accent/50 hover:shadow-[0_0_10px_-2px_rgba(0,229,255,0.35)] bg-bg-raised',
-                mutation.isPending && !active ? 'opacity-50' : '',
+                  ? 'border-accent bg-accent/10 shadow-[0_0_14px_-2px_rgba(232,65,66,0.55)]'
+                  : 'border-border-subtle hover:border-accent/50 hover:shadow-[0_0_10px_-2px_rgba(232,65,66,0.35)] bg-bg-raised',
+                !demo && mutation.isPending && !active ? 'opacity-50' : '',
               ].join(' ')}
             >
               <div className="flex items-center justify-between">

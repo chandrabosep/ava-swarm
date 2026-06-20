@@ -11,7 +11,7 @@
 
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useAccount } from 'wagmi';
+import { useManagedAddress } from '@/hooks/useManagedAddress';
 import {
   getFungiblePositions,
   getWalletPnl,
@@ -28,6 +28,12 @@ import {
 import { USE_TESTNET } from '@/config/swarm';
 import { recordSnapshot } from '@/lib/portfolioSnapshots';
 import { stableUsdFromPortfolio } from '@/lib/portfolio';
+import {
+  isDemoFeed,
+  buildDemoPositions,
+  buildDemoPortfolio,
+} from '@/lib/demoFeed';
+import { useDemoProfile } from '@/lib/demoProfile';
 
 /** Don't retry 429s — they only get worse the more we hit them. */
 function shouldRetry(failureCount: number, error: unknown): boolean {
@@ -36,39 +42,49 @@ function shouldRetry(failureCount: number, error: unknown): boolean {
 }
 
 export function useFungiblePositions(query: PositionsQuery = {}) {
-  const { address } = useAccount();
+  const address = useManagedAddress();
   const lowerAddress = address?.toLowerCase();
+  const demoProfile = useDemoProfile();
   return useQuery({
     queryKey: [
       USE_TESTNET ? 'alchemy' : 'zerion',
       'positions',
       lowerAddress,
       query,
+      isDemoFeed() ? demoProfile : null,
     ],
-    queryFn: () =>
-      USE_TESTNET
+    queryFn: () => {
+      // Demo mode: show a deployed treasury matching the selected profile
+      // so the Allocation chart + stable ratio track the swarm's feed.
+      if (isDemoFeed()) return Promise.resolve(buildDemoPositions(demoProfile));
+      return USE_TESTNET
         ? getAlchemyPositions(address!)
-        : getFungiblePositions(address!, query),
-    enabled: !!address,
+        : getFungiblePositions(address!, query);
+    },
+    enabled: !!address || isDemoFeed(),
     retry: shouldRetry,
   });
 }
 
 export function useWalletPortfolio(currency: string = 'usd') {
-  const { address } = useAccount();
+  const address = useManagedAddress();
   const lowerAddress = address?.toLowerCase();
+  const demoProfile = useDemoProfile();
   const query = useQuery({
     queryKey: [
       USE_TESTNET ? 'alchemy' : 'zerion',
       'portfolio',
       lowerAddress,
       currency,
+      isDemoFeed() ? demoProfile : null,
     ],
-    queryFn: () =>
-      USE_TESTNET
+    queryFn: () => {
+      if (isDemoFeed()) return Promise.resolve(buildDemoPortfolio());
+      return USE_TESTNET
         ? getAlchemyPortfolio(address!)
-        : getWalletPortfolio(address!, currency),
-    enabled: !!address,
+        : getWalletPortfolio(address!, currency);
+    },
+    enabled: !!address || isDemoFeed(),
     retry: shouldRetry,
   });
 
@@ -98,7 +114,7 @@ export function useWalletPortfolio(currency: string = 'usd') {
 export { stableUsdFromPortfolio };
 
 export function useWalletTransactions(query: TransactionsQuery = {}) {
-  const { address } = useAccount();
+  const address = useManagedAddress();
   const lowerAddress = address?.toLowerCase();
   return useQuery({
     queryKey: ['zerion', 'transactions', lowerAddress, query],
@@ -109,7 +125,7 @@ export function useWalletTransactions(query: TransactionsQuery = {}) {
 }
 
 export function useWalletPnl(currency: string = 'usd') {
-  const { address } = useAccount();
+  const address = useManagedAddress();
   const lowerAddress = address?.toLowerCase();
   return useQuery({
     queryKey: ['zerion', 'pnl', lowerAddress, currency],

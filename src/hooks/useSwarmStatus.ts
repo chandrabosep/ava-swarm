@@ -4,10 +4,12 @@
 // and the intents log panel.
 
 import { useQuery } from '@tanstack/react-query';
-import { useAccount } from 'wagmi';
 
+import { useManagedAddress } from '@/hooks/useManagedAddress';
 import { AGENTS_API_URL } from '@/config/swarm';
 import type { SessionAgent } from '@/types/swarm';
+import { isDemoFeed, buildDemoIntents, demoAgents } from '@/lib/demoFeed';
+import { useDemoProfile } from '@/lib/demoProfile';
 
 export type AgentLiveStatus = 'online' | 'idle' | 'offline';
 
@@ -59,33 +61,60 @@ const FALLBACK_AGENTS: AgentRuntimeRow[] = (
 ).map((role) => ({ role, status: 'offline', lastSeenMs: 0, users: 0 }));
 
 export function useSwarmStatus() {
-  const { address: owner } = useAccount();
+  const owner = useManagedAddress();
   // Architecture: the EOA *is* the account (EIP-7702). Funds never move.
   const walletAddress = owner;
 
+  const demo = isDemoFeed();
+  const demoProfile = useDemoProfile();
+
   return useQuery<SwarmStatus>({
-    queryKey: ['swarm-status', walletAddress?.toLowerCase()],
+    queryKey: ['swarm-status', walletAddress?.toLowerCase(), demo, demoProfile],
     queryFn: async () => {
       if (!walletAddress) {
         return {
           walletAddress: '',
-          activated: false,
-          riskProfile: 'balanced',
+          activated: demo,
+          riskProfile: demo ? demoProfile : 'balanced',
           customConfig: null,
           sessions: [],
-          agents: FALLBACK_AGENTS,
-          intents: [],
+          agents: demo ? demoAgents() : FALLBACK_AGENTS,
+          intents: demo ? buildDemoIntents(demoProfile) : [],
         } satisfies SwarmStatus;
       }
-      const res = await fetch(
-        `${AGENTS_API_URL}/api/status/${walletAddress.toLowerCase()}`,
-      );
-      if (!res.ok) {
-        throw new Error(`status ${res.status}`);
+      try {
+        const res = await fetch(
+          `${AGENTS_API_URL}/api/status/${walletAddress.toLowerCase()}`,
+        );
+        if (!res.ok) {
+          throw new Error(`status ${res.status}`);
+        }
+        const data = (await res.json()) as SwarmStatus;
+        // Demo mode: always show the synthetic feed + profile. Real intents
+        // can include failed swap/x402 attempts (no funded wallet), which we
+        // never want on camera. Agents/sessions stay real.
+        if (demo) {
+          data.intents = buildDemoIntents(demoProfile);
+          data.riskProfile = demoProfile;
+        }
+        return data;
+      } catch (err) {
+        // Backend unreachable: in demo mode, still light up the feed.
+        if (demo) {
+          return {
+            walletAddress,
+            activated: true,
+            riskProfile: demoProfile,
+            customConfig: null,
+            sessions: [],
+            agents: demoAgents(),
+            intents: buildDemoIntents(demoProfile),
+          } satisfies SwarmStatus;
+        }
+        throw err;
       }
-      return (await res.json()) as SwarmStatus;
     },
-    enabled: !!walletAddress,
+    enabled: !!walletAddress || demo,
     // Poll fast enough that intent state transitions (pending → routed →
     // executed) feel instant in the UI. ~1s is the sweet spot — any
     // faster and we hammer the API with diminishing returns. SSE would

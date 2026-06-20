@@ -57,7 +57,13 @@ async function tickAll(ctx: AgentContext): Promise<void> {
     select: { walletAddress: true },
   });
 
-  for (const { walletAddress } of sessions) {
+  // The agent's own treasury wallet is always managed, regardless of user
+  // sessions — it's the account the executor actually swaps on Pangolin.
+  const wallets = new Set(sessions.map((s) => s.walletAddress?.toLowerCase()).filter(Boolean) as string[]);
+  const treasury = process.env.TREASURY_WALLET?.toLowerCase();
+  if (treasury) wallets.add(treasury);
+
+  for (const walletAddress of wallets) {
     // Defensive: schema declares this non-null, but a stale prisma
     // client + the legacy safe_address column mapping have produced
     // empty strings here in the past. A tick with no wallet would
@@ -176,22 +182,14 @@ async function tickUser(
     intentId: row.id,
     payload: intent,
   };
-  // Three-layer transport: AXL gossip (multi-host), PG LISTEN/NOTIFY
-  // (single-host instant), DB poll (resilience — already persistent
-  // from the upstream upsert). Fan out to all three in parallel.
-  const [axlPub] = await Promise.all([
-    ctx.axl.publish({ topic: TOPICS.pmAllocation, payload: msg }),
-    ctx.pg.publish({
-      topic: TOPICS.pmAllocation,
-      from: ctx.role,
-      payload: msg,
-    }),
-  ]);
+  // Two-layer transport: Postgres LISTEN/NOTIFY gossip (instant) + DB
+  // poll (resilience — already persisted by the upstream upsert). The
+  // mesh rides the same gossip bus, so a single publish is enough.
+  const pub = await ctx.axl.publish({ topic: TOPICS.pmAllocation, payload: msg });
   ctx.log.info('allocation proposed', {
     walletAddress,
     targets: intent.targets,
-    axlDelivered: axlPub.delivered,
-    transport:
-      axlPub.delivered > 0 ? 'axl+pg' : 'pg+db-poll-fallback',
+    gossipDelivered: pub.delivered,
+    transport: pub.delivered ? 'gossip+db-poll' : 'db-poll-fallback',
   });
 }
