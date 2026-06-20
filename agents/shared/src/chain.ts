@@ -17,12 +17,18 @@ import {
   type Address,
   type Hex,
 } from 'viem';
-import { mainnet, base, unichain } from 'viem/chains';
+import { mainnet, base, unichain, avalanche, avalancheFuji } from 'viem/chains';
 
 import { env } from './env.js';
 import type { SupportedChain } from './types.js';
 
-const VIEM_CHAIN = { mainnet, base, unichain } as const;
+const VIEM_CHAIN = {
+  mainnet,
+  base,
+  unichain,
+  avalanche,
+  'avalanche-fuji': avalancheFuji,
+} as const;
 
 // Return type intentionally inferred — viem's exported `PublicClient`
 // alias and the actual return of `createPublicClient(...)` are two
@@ -30,8 +36,15 @@ const VIEM_CHAIN = { mainnet, base, unichain } as const;
 // error 2719). Letting inference do the work avoids the conflict and
 // gives callers a tighter type.
 export function publicClientFor(chain: SupportedChain) {
+  // VIEM_CHAIN only maps the chains the swarm actually reads from. The
+  // SupportedChain union is broader (it labels intent payloads too), so guard
+  // rather than index blindly — keeps the Avalanche demo path sound.
+  const viemChain = VIEM_CHAIN[chain as keyof typeof VIEM_CHAIN];
+  if (!viemChain) {
+    throw new Error(`[chain] no viem mapping for '${chain}'`);
+  }
   return createPublicClient({
-    chain: VIEM_CHAIN[chain],
+    chain: viemChain,
     transport: http(env.rpc(chain)),
   });
 }

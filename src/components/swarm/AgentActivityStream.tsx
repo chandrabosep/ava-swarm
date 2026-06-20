@@ -9,7 +9,7 @@
 // We just render it more aggressively (group routed siblings, decode
 // token addresses to symbols, format USD, expose LLM reasoning).
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Surface } from '@/components/common/Surface';
 import { Badge } from '@/components/common/Badge';
@@ -56,6 +56,9 @@ const TOKEN_COLOR: Record<string, string> = {
   ETH: 'bg-violet-500/30 text-violet-300 border-violet-500/40',
   WETH: 'bg-violet-500/30 text-violet-300 border-violet-500/40',
   USDC: 'bg-amber-500/30 text-amber-300 border-amber-500/40',
+  AVAX: 'bg-red-500/30 text-red-300 border-red-500/40',
+  WAVAX: 'bg-red-500/30 text-red-300 border-red-500/40',
+  DAI: 'bg-yellow-500/30 text-yellow-300 border-yellow-500/40',
   WBTC: 'bg-orange-500/30 text-orange-300 border-orange-500/40',
   UNI: 'bg-pink-500/30 text-pink-300 border-pink-500/40',
 };
@@ -91,6 +94,9 @@ const ADDR_SYMBOL: Record<string, string> = {
   '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC',
   // base sepolia USDC
   '0x036cbd53842c5426634e7929541ec2318f3dcf7e': 'USDC',
+  // avalanche fuji (the active Speedrun chain)
+  '0x5425890298aed601595a70ab815c96711a31bc65': 'USDC',
+  '0xd00ae08403b9bbb9124bb305c09058e32c39a48c': 'WAVAX',
 };
 
 function symbolOf(addr: string): string {
@@ -102,13 +108,7 @@ function symbolOf(addr: string): string {
 
 function chainSlug(c: unknown): ChainSlug {
   if (typeof c !== 'string') return defaultExplorerChain;
-  const allowed: ChainSlug[] = [
-    'mainnet',
-    'base',
-    'unichain',
-    'sepolia',
-    'base-sepolia',
-  ];
+  const allowed: ChainSlug[] = ['avalanche', 'avalanche-fuji'];
   return allowed.includes(c as ChainSlug)
     ? (c as ChainSlug)
     : defaultExplorerChain;
@@ -254,7 +254,7 @@ function RoutedRow({
         <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-subtle">
           {isOtc ? (
             <>
-              <span className="text-accent">via AXL mesh · skipped Uniswap</span>
+              <span className="text-accent">OTC match · settled wallet-to-wallet</span>
               {payload.otc?.savedUsd != null && (
                 <span className="text-positive">
                   saved ${payload.otc.savedUsd.toFixed(2)}
@@ -340,6 +340,14 @@ export function AgentActivityStream() {
   const status = useSwarmStatus();
   const intents = status.data?.intents ?? [];
 
+  // Re-render once a second so the relative "X seconds ago" stamps stay
+  // live between feed updates.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const rows = useMemo(() => {
     // Latest 30 — already ordered desc from the API. Filter out garbage.
     return intents
@@ -348,21 +356,21 @@ export function AgentActivityStream() {
   }, [intents]);
 
   return (
-    <section>
+    <section className="flex-1 min-h-0 flex flex-col">
       <div className="flex items-baseline justify-between mb-3">
         <h2 className="hud-title text-sm">Agent Feed</h2>
         <span className="text-[10px] text-fg-subtle uppercase tracking-hud font-sans">
           {rows.length} live
         </span>
       </div>
-      <Surface className="p-0 overflow-hidden">
+      <Surface className="p-0 overflow-hidden flex-1 min-h-0 flex flex-col">
         {rows.length === 0 ? (
           <div className="p-5 text-xs text-fg-muted">
             Waiting for the swarm to think… first PM tick lands within the
             cadence window.
           </div>
         ) : (
-          <ul className="divide-y divide-border-subtle">
+          <ul className="divide-y divide-border-subtle flex-1 min-h-0 overflow-y-auto">
             {rows.map((intent) => {
               const p = intent.payload as Record<string, unknown>;
               const kind = (p.kind as string | undefined) ?? '';

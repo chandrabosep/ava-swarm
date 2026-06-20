@@ -1,0 +1,15 @@
+=== Fuji wallet balances ===
+⚠️  PM       0xAe3dafa9d6E68f1651f4AC709B907F66252D7Fc1  AVAX=0.0000  USDC=0.00
+⚠️  ROUTER   0x7A8a58cbE22d40Bc01CEEbD9a4B374D0fda666F3  AVAX=0.0000
+⚠️  EXECUTOR 0x7D7627c2570a578A72c4AFBCd4EcF03a2526d67c  AVAX=0.0000
+⚠️  ALM      0xed7dfbDb2787a28F7386ed6a86e9bfcF83266109  AVAX=0.0000
+  (PM needs AVAX + USDC; others need a little AVAX for ERC-8004 writes)
+
+=== ERC-8004 registries ===
+❌ Identity    unset — run the DeployErc8004 forge script
+❌ Reputation  unset — run the DeployErc8004 forge script
+
+=== x402 facilitator ===
+✅ https://facilitator.ultravioletadao.xyz/supported -> HTTP 200
+
+⛔ NOT READY — resolve the ⚠️/❌ items above.

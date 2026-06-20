@@ -16,7 +16,15 @@ import {
   type Hex,
   type PublicClient,
 } from 'viem';
-import { mainnet, base, unichain, sepolia, baseSepolia } from 'viem/chains';
+import {
+  mainnet,
+  base,
+  unichain,
+  sepolia,
+  baseSepolia,
+  avalanche,
+  avalancheFuji,
+} from 'viem/chains';
 
 import { env } from '@swarm/shared';
 import type { SupportedChain } from '@swarm/shared';
@@ -27,6 +35,11 @@ const VIEM_CHAIN = {
   unichain,
   sepolia,
   'base-sepolia': baseSepolia,
+  // Uniswap v4 isn't deployed on Avalanche, so ALM idles here (readPositions
+  // short-circuits on the zero-address PositionManager). Chains still need to
+  // be present to satisfy Record<SupportedChain>.
+  avalanche,
+  'avalanche-fuji': avalancheFuji,
 } as const satisfies Record<SupportedChain, unknown>;
 
 // Uniswap v4 PositionManager addresses (from docs.uniswap.org/contracts/v4/deployments).
@@ -40,6 +53,10 @@ export const POSITION_MANAGER: Record<SupportedChain, Address> = {
   // Uniswap v4 Sepolia PositionManager (per docs.uniswap.org/contracts/v4/deployments).
   sepolia: '0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4',
   'base-sepolia': '0x4B2C77d209D3405F41a037Ec6c77F7F5b8e2ca80',
+  // Uniswap v4 not deployed on Avalanche — zero address makes readPositions
+  // short-circuit (getCode returns '0x'), so ALM cleanly returns no positions.
+  avalanche: '0x0000000000000000000000000000000000000000',
+  'avalanche-fuji': '0x0000000000000000000000000000000000000000',
 };
 
 // Minimal ABI — only the bits we read from outside the SDK.

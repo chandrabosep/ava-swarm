@@ -11,7 +11,8 @@
   "dependencies": {
     "@swarm/shared": "*",
     "openai": "^4.73.0",
-    "viem": "^2.21.0"
+    "viem": "^2.21.0",
+    "x402-fetch": "^1.2.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
