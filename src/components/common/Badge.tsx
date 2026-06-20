@@ -14,7 +14,7 @@ const TONES: Record<Tone, string> = {
   warning:
     'bg-warning/15 border-warning/50 text-warning shadow-[0_0_6px_-1px_rgba(255,181,71,0.55)]',
   accent:
-    'bg-accent/15 border-accent/55 text-accent shadow-[0_0_6px_-1px_rgba(0,229,255,0.55)]',
+    'bg-accent/15 border-accent/55 text-accent shadow-[0_0_6px_-1px_rgba(232,65,66,0.55)]',
 };
 
 interface BadgeProps {
