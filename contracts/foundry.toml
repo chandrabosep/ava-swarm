@@ -10,6 +10,7 @@ via_ir = false
 remappings = [
   "forge-std/=lib/forge-std/src/",
   "permit2/=src/interfaces/",
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
 ]
 
 [profile.fork]
@@ -22,6 +23,9 @@ bracket_spacing = false
 int_types = "long"
 
 [rpc_endpoints]
+# Speedrun: Agentic Payments — ERC-8004 registries deploy to Fuji.
+avalanche-fuji = "${RPC_AVALANCHE_FUJI}"
+avalanche = "${RPC_AVALANCHE}"
 mainnet = "${RPC_MAINNET}"
 base = "${RPC_BASE}"
 unichain = "${RPC_UNICHAIN}"

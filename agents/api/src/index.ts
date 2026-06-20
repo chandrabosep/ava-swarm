@@ -17,6 +17,10 @@ import express from 'express';
 import {
   db,
   createLogger,
+  env,
+  getReputation,
+  serviceAddress,
+  SPECIALISTS,
   type AgentRole,
 } from '@swarm/shared';
 import {
@@ -350,7 +354,7 @@ const GLOBAL_HEARTBEAT_KEY = '0x0000000000000000000000000000000000000000';
 // USE_TESTNET=true. Anything else (mainnet/base/unichain) gets
 // filtered out client-side regardless of what's in the DB. PM
 // allocations have no chain field — those always pass through.
-const TESTNET_CHAINS = new Set(['sepolia', 'base-sepolia']);
+const TESTNET_CHAINS = new Set(['sepolia', 'base-sepolia', 'avalanche-fuji']);
 const USE_TESTNET =
   (process.env.USE_TESTNET ?? 'false').toLowerCase() === 'true' ||
   process.env.USE_TESTNET === '1';
@@ -468,6 +472,95 @@ app.get('/api/status/:walletAddress', async (req, res) => {
     });
   } catch (err) {
     log.error('status query failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// =====================================================================
+// Speedrun: Agentic Payments — marketplace view
+// =====================================================================
+//
+// Public (no wallet) read for the dashboard's "agents that hire agents"
+// panel: the specialist roster with on-chain ERC-8004 reputation, plus the
+// recent x402 payment feed (who PM hired, how much, and the settlement tx).
+
+/** Sentinel wallet the PM hire loop keys its demo events to (see pm/hire.ts). */
+const MARKET_KEY = '0x0000000000000000000000000000000000000000';
+
+app.get('/api/marketplace', async (_req, res) => {
+  try {
+    // Specialist roster + live ERC-8004 reputation (best-effort on-chain read;
+    // neutral 50 when registries aren't configured yet).
+    const specialists = await Promise.all(
+      SPECIALISTS.map(async (s) => {
+        const pinned = process.env[`ERC8004_${s.role.toUpperCase()}_AGENT_ID`];
+        const agentId = pinned ? Number(pinned) : null;
+        let reputation = { count: 0, avgScore: 50 };
+        if (agentId !== null) {
+          try {
+            const r = await getReputation(agentId);
+            reputation = { count: r.count, avgScore: r.avgScore };
+          } catch {
+            /* RPC/registry unavailable — keep neutral default */
+          }
+        }
+        return {
+          role: s.role,
+          label: s.label,
+          description: s.description,
+          path: s.path,
+          price: s.price,
+          payTo: (() => {
+            try {
+              return serviceAddress(s.role);
+            } catch {
+              return null;
+            }
+          })(),
+          agentId,
+          reputation,
+        };
+      }),
+    );
+
+    const events = await db().event.findMany({
+      where: { walletAddress: MARKET_KEY, kind: 'x402.hire' },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+    });
+    const hires = events.map((e) => {
+      const p = (e.payload ?? {}) as Record<string, unknown>;
+      return {
+        ts: e.createdAt,
+        specialist: p.specialist ?? null,
+        label: p.label ?? null,
+        tag: p.tag ?? null,
+        agentId: p.agentId ?? null,
+        price: p.price ?? null,
+        payTo: p.payTo ?? null,
+        ok: p.ok ?? false,
+        score: p.score ?? null,
+        repBefore: p.repBefore ?? null,
+        payTxHash: p.payTxHash ?? null,
+        feedbackTx: p.feedbackTx ?? null,
+        result: p.result ?? null,
+        error: p.error ?? null,
+      };
+    });
+
+    return res.json({
+      network: env.x402Network(),
+      facilitator: env.x402FacilitatorUrl(),
+      marketplaceUrl: env.marketplaceUrl(),
+      identityRegistry: env.erc8004Identity() ?? null,
+      reputationRegistry: env.erc8004Reputation() ?? null,
+      specialists,
+      hires,
+    });
+  } catch (err) {
+    log.error('marketplace query failed', {
       err: err instanceof Error ? err.message : String(err),
     });
     return res.status(500).json({ error: 'internal error' });
